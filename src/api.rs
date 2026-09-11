@@ -16,8 +16,6 @@ use crate::store::Role;
 pub enum StreamEvent {
     /// A content delta, in arrival order.
     Delta(String),
-    /// A reasoning/thinking delta, for providers that emit one.
-    ReasoningDelta(String),
     /// The stream ended normally.
     Done,
     /// The stream ended with a user-visible error.
@@ -38,15 +36,19 @@ pub fn normalize_base(raw: &str) -> String {
     }
 }
 
-/// Runs `future` on a worker thread with its own tokio runtime.
-fn spawn_runtime<T: Send + 'static>(future: impl Future<Output = T> + Send + 'static) -> async_channel::Receiver<T> {
+/// Runs a fallible request on a worker thread with its own tokio runtime.
+fn spawn_runtime<T: Send + 'static>(
+    future: impl Future<Output = Result<T, String>> + Send + 'static,
+) -> async_channel::Receiver<Result<T, String>> {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
+        let result = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|err| format!("无法启动网络运行时: {err}"))
-            .and_then(|runtime| runtime.block_on(future));
+        {
+            Ok(runtime) => runtime.block_on(future),
+            Err(err) => Err(format!("无法启动网络运行时: {err}")),
+        };
         let _ = tx.send_blocking(result);
     });
     rx
@@ -227,14 +229,6 @@ pub fn stream_chat(
                         {
                             send(StreamEvent::Error(message.to_string())).await;
                             return;
-                        }
-                        if let Some(reasoning) = value
-                            .pointer("/choices/0/delta/reasoning_content")
-                            .and_then(|text| text.as_str())
-                        {
-                            if !reasoning.is_empty() {
-                                send(StreamEvent::ReasoningDelta(reasoning.to_string())).await;
-                            }
                         }
                         if let Some(content) = value
                             .pointer("/choices/0/delta/content")

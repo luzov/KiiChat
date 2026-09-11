@@ -1,30 +1,41 @@
-use gpui::{App, AppContext as _, Entity, WindowOptions, div, prelude::*, px};
-use gpui_component::{ActiveTheme as _, Root, v_flex};
+//! KiiChat — a lightweight, Cherry Studio-style chat client for any
+//! OpenAI-compatible endpoint.
 
-struct KiiChat;
+mod api;
+mod app;
+mod store;
 
-impl Render for KiiChat {
-    fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .bg(cx.theme().background)
-            .child(div().text_xl().child("KiiChat"))
-    }
-}
+use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
+
+use gpui_component::{ActiveTheme as _, Root, TitleBar};
+
+use app::KiiChat;
 
 fn main() {
     gpui_platform::application()
         .with_assets(gpui_component_assets::Assets)
         .run(|cx: &mut App| {
+            // Initializes gpui-component too, so the application never calls both.
             gpui_ai::init(cx);
 
-            let view: Entity<KiiChat> = cx.new(|_| KiiChat);
-            cx.open_window(WindowOptions::default(), move |window, cx| {
+            let bounds = Bounds::centered(None, size(px(1080.), px(720.)), cx);
+            // Client-side decorations: the app draws its own title bar, so the
+            // window chrome matches the theme instead of the OS default.
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(720.), px(480.))),
+                ..TitleBar::window_options()
+            };
+
+            cx.open_window(options, |window, cx| {
+                let view = cx.new(|cx| {
+                    let mut view = KiiChat::new(window, cx);
+                    view.open(window, cx);
+                    view
+                });
                 cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
             })
-            .expect("a window");
+            .expect("opening the main window");
             cx.activate(true);
         });
 }

@@ -108,6 +108,28 @@ impl Session {
     }
 }
 
+/// The color scheme the window uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub fn is_dark(self) -> bool {
+        matches!(self, Theme::Dark)
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            Theme::Light => Theme::Dark,
+            Theme::Dark => Theme::Light,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Store {
     #[serde(default)]
@@ -117,6 +139,9 @@ pub struct Store {
     /// Provider a new conversation starts with.
     #[serde(default)]
     pub selected_provider: Option<String>,
+    /// Color scheme, persisted across runs.
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 impl Store {
