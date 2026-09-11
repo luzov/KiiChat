@@ -12,16 +12,17 @@ binary, no server.
 
 ## Stack (do not mix versions)
 
-The UI stack is published as a set that moves together; mixing sets gives two
-incompatible copies of GPUI's types and fails to compile in confusing ways.
+The upstream UI stack is published as a set that moves together; mixing sets
+gives two incompatible copies of GPUI's types and fails to compile in confusing
+ways.
 
-| Crate | Cargo line | Role |
+| Crate | Cargo line | What this app uses from it |
 | --- | --- | --- |
-| `gpui-pre` | `gpui = { package = "gpui-pre", ... }` | Zed's GPUI, renamed so `use gpui::` works |
+| `gpui-pre` | `gpui = { package = "gpui-pre", ... }` | The framework; renamed so `use gpui::` works |
 | `gpui-pre-platform` | `gpui_platform = ...` | Window/application bootstrap per OS |
-| `gpui-component` | `gpui-component` | Theme, `Root`, `TitleBar`, Buttons, Inputs |
+| `gpui-component` | `gpui-component` | Theme + palette, `Root`, `TitleBar`, `Button`, `Input`, `TextView`, scroll helpers |
 | `gpui-kit-assets` | `gpui-component-assets = { package = "gpui-kit-assets", ... }` | Bundled Lucide icons |
-| `gpui-ai` | `gpui-ai` | `Chat` (virtualized transcript + composer), `PromptBar`, `StreamedContent` |
+| `gpui-ai` | `gpui-ai` | `PromptBar` (composer), `StreamingText` (streamed Markdown), `Orbs` (empty-conversation animation). Its `Chat` component is deliberately **not** used |
 
 Rules:
 
@@ -31,42 +32,75 @@ Rules:
 - `gpui_ai::init(cx)` once, before any window. It initializes gpui-component
   too, so never call `gpui_component::init` as well.
 - Every window's first-level view must be `gpui_component::Root`.
+- `gpui-ai`'s `Chat` was dropped because its message row is fixed: it always
+  renders a role heading, and its action row only offers
+  copy/regenerate/edit/feedback with icons. This app needs no role headings,
+  text actions (复制 / 分支 / 重试), a red 失败重试 state, and a branch action —
+  none of which the component exposes. The transcript is therefore built here.
 
 ## Layout
 
 ```
 src/main.rs    application bootstrap, window options, Root wiring
-src/app.rs     the whole view: sidebar, chat pane, settings page, streaming
-src/api.rs     OpenAI-compatible HTTP: /models, streaming /chat/completions
-src/store.rs   providers, sessions, messages, theme; JSON persistence
-scripts/       dev tooling: mock provider server, UI Automation helpers
+src/app.rs     the whole view: sidebar, transcript, composer, settings pages
+src/api.rs     OpenAI-compatible HTTP: /models, streaming /chat/completions, proxy modes
+src/icons.rs   asset source: the bundled icons plus the two glyphs they lack
+src/store.rs   providers, sessions, messages, theme, proxy; JSON persistence
+scripts/       dev tooling: fake provider server + UI Automation / capture helpers
 ```
 
 ## How the pieces fit
 
-- **The view owns all state.** `KiiChat` holds `Store` and hands `Chat` an
-  `Arc<[ChatMessage]>` snapshot. `gpui-ai` components render snapshots only.
-- **Message identity is the stored `Msg.id` (a uuid).** `Chat::set_messages`
-  silently ignores a snapshot with duplicate ids, so never synthesize ids from
-  indices.
+- **The view owns all state.** `KiiChat` holds `Store`; the transcript is a
+  `gpui::ListState` (variable-height rows, `FollowMode::Tail`) rendered by
+  `render_row`. No message snapshot type exists any more.
+- **Message identity is the stored `Msg.id` (a uuid).** Element ids derive from
+  it; never synthesize ids from indices alone.
 - **Streaming never runs on the UI thread.** `api::stream_chat` spawns a thread
   with its own current-thread tokio runtime (reqwest needs a tokio reactor;
   GPUI runs on smol) and pushes `StreamEvent`s over an `async_channel`. The UI
-  task consumes them via `update_in`, which is where the `&mut Window` needed
-  by `Chat::set_messages` comes from.
+  task consumes them via `update_in`.
+- **List invalidation is explicit.** A delta calls
+  `transcript.remeasure_items(row..row + 1)`; structural changes call
+  `sync_transcript`, which resets the item count and only follows the tail when
+  the reader is already at the tail (`force_follow` is for session switches and
+  sends).
+- **The list element needs an explicit size.** `list(...)` is a custom element:
+  without `.size_full()` it lays out to zero height and paints nothing.
 - **Persist on transitions, not on deltas.** `Store::save` after a send
-  completes, a session/provider changes, or the theme changes — never per SSE
-  chunk.
-- **Errors surface in the UI.** Failed assistant messages are stored with
-  `Msg.error`, rendered as a failed bubble, and marked `retryable(true)` so
-  Chat's Retry button reports `ChatEvent::RetryRequested`, which re-runs the
-  completion.
+  completes, a session/provider/theme/proxy changes — never per SSE chunk.
+- **Proxy modes are resolved per request** in `api::client`: `System` keeps
+  reqwest's default (env + OS proxy), `None` calls `.no_proxy()`, `Custom`
+  installs `reqwest::Proxy::all(url)`. An empty custom URL is an error, not a
+  silent fallback.
+- **Errors surface in the UI.** A failed reply is stored in `Msg.error`, shown
+  inside the bubble with a red border, and its retry action becomes a red
+  "失败重试" text button.
+- **Palette overrides must be re-applied after every theme change.**
+  `Theme::change` re-applies the active theme JSON, wiping color edits, so
+  `apply_theme` changes the mode first, then writes the palette into
+  `Theme::global_mut(cx).colors`, then `Theme::sync_base` + `window.refresh`.
+  Token order in `colors_of` and both palette arrays must stay in step.
+- **Two icons are embedded by this app.** The bundled component icon set is a
+  curated 101-glyph subset with no branch and no pencil, so `src/icons.rs`
+  wraps `gpui_component_assets::Assets` and serves `icons/kiichat-*.svg` from
+  string constants. GPUI rasterizes SVGs as alpha masks tinted with the text
+  color, so a stroke-based SVG needs no color handling. Reference them with
+  `Icon::empty().path(icons::GIT_FORK_PATH)`; `gpui_component::IconName` only
+  carries the curated set.
+- **Actions are icon-only square buttons** (`复制` / `分支` / `重试`, plus `编辑`
+  on user messages). Every icon-only control carries `.tooltip(...)` and
+  `.accessibility_label(...)`, which is also how the verification scripts find
+  it. A failed reply's retry grows a red `重试` label.
+- **Editing a user message re-sends it.** Saving the inline editor rewrites the
+  message, drops every reply after it, and launches a fresh completion.
 - **Client-side decorations.** The window is created from
-  `TitleBar::window_options()` and `KiiChat::render` emits `TitleBar` as the
-  first child. Without it the title bar disappears and the window cannot be
-  dragged.
-- **Layout guards.** The `Chat` host needs `.flex_1().min_h_0()`; text that
-  shrinks needs `.min_w_0()`.
+  `TitleBar::window_options()` and the root view emits `TitleBar` as its first
+  child. Without it the title bar disappears and the window cannot be dragged.
+  Controls placed *inside* the title bar receive no clicks (its drag region
+  covers them), so the sidebar / theme / page toggles live in the toolbar the
+  main pane renders above its content — visible on both pages and while the
+  sidebar is folded away.
 
 ## Conventions
 
@@ -84,58 +118,68 @@ cargo build                 # debug
 cargo run                   # launch the window
 cargo build --release       # shipped binary
 cargo clippy --all-targets  # must stay clean
-cargo test                  # unit tests (API URL/SSE parsing)
 ```
 
 Config lives at `%APPDATA%\KiiChat\config.json` (Windows),
-`~/.config/KiiChat/config.json` (Linux), `~/Library/Application Support/KiiChat/config.json`
-(macOS). Deleting it resets the app.
+`~/.config/KiiChat/config.json` (Linux),
+`~/Library/Application Support/KiiChat/config.json` (macOS). Deleting it resets
+the app.
 
 ## Verifying a change
 
-GPUI has no headless test harness for real frames here, so verify against the
-running app. Release builds cannot be verified by reasoning; launch it.
+GPUI has no headless frame test here, so verify against the running app. A clean
+compile proves nothing about layout.
 
 1. **Launch and read the accessibility tree** (Windows):
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts/uia.ps1
+   powershell -ExecutionPolicy Bypass -File scripts/uia.ps1              # full tree
+   powershell -ExecutionPolicy Bypass -File scripts/buttons.ps1 -MinY 0  # buttons, decoded names
    ```
 
-   It prints control type, accessible name and geometry for every element, which
-   is enough to confirm panes, buttons, composer state and message rows exist.
+   `buttons.ps1` writes UTF-8 to `%TEMP%\kiichat-buttons.txt` because the
+   console mangles Chinese; read that file. It is the fastest way to confirm
+   that rows, actions and settings controls really rendered.
 
 2. **Drive it without a keyboard.** `scripts/invoke.ps1 -Name <label>` invokes a
-   named button through UI Automation (use `-NameB64` for Chinese labels to
-   dodge console encoding). Use it to exercise flows such as Retry.
+   named button through UI Automation (use `-NameB64` for Chinese labels, e.g.
+   `5aSx6LSl6YeN6K+V` is 失败重试 — the base64 of the UTF-8 name).
+   `scripts/click.ps1 -X -Y` synthesizes a real click and sets DPI awareness
+   first; without that a 200%-scaled desktop aims at half the intended point.
 
 3. **Exercise the network path against a fake provider**:
 
    ```sh
-   python scripts/mock_openai.py      # serves /v1/models and a streaming completion on 127.0.0.1:18080
+   python scripts/mock_openai.py   # /v1/models plus a streaming completion on 127.0.0.1:18080
    ```
 
    Point a provider's Base URL at `http://127.0.0.1:18080/v1`, then check the
    server log for the request and `%APPDATA%\KiiChat\config.json` for the
-   persisted streamed answer — that is proof the whole path ran.
+   persisted streamed answer.
 
-4. **Screenshots** (visual confirmation):
+4. **Verify visually without eyes.** Capture, then measure:
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts/capture.ps1
+   powershell -ExecutionPolicy Bypass -File scripts/capture.ps1 -Out D:/tmp/shot.png
    ```
+
+   The capture is the window at its true pixel size (the script sets DPI
+   awareness), while UI Automation reports *screen* coordinates — subtract the
+   window origin before sampling a control's pixels. Compare mean luminance
+   between light and dark frames, and check a specific rect's pixels for the
+   expected ink (a red retry label, a pale blue bubble).
 
 Hard rules for verification:
 
 - Never claim a UI change works from a clean compile alone.
 - Never leave `target/kiichat.exe` locked: stop the running app before rebuilding.
-- The app writes to the real user config; if you seed it for a test, say so and
-  restore or delete it afterwards.
+- The app writes to the real user config. If you seed it for a test, say so and
+  restore the previous file afterwards.
 
 ## Repository hygiene
 
 - `target/` must never be tracked (`git ls-files | grep -c '^target/'` is 0).
-- Keep commits scoped and written as `type: summary` (`feat:`, `fix:`, `docs:`,
-  `chore:`).
+- Commit after each verified change, as `type: summary` (`feat:`, `fix:`,
+  `docs:`, `chore:`), and push.
 - Keep README's feature list and the GitHub description/topics in sync with what
   the app actually does.
