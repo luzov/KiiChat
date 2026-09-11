@@ -109,6 +109,13 @@ scripts/       dev tooling: fake provider server + UI Automation / capture helpe
   Windows (the platform leaves the default empty impl), so window moving relies
   on that drag area; `scripts/drag.ps1` verifies a title drag moves the window
   by the pointer delta.
+- **Measure windows with Win32, not the capture script.** `capture.ps1` used to
+  restore the window before capturing, which un-maximizes it: a "did maximize
+  work?" check through it always read the restored size. It now restores only a
+  minimized window and prints the minimized/maximized flags. The controls
+  themselves are platform hit-test areas, so verify them by clicking their
+  centre and reading `IsZoomed` / `IsIconic` / the process list — UIA can drive
+  the app's own buttons, but not those areas.
 
 ## Conventions
 

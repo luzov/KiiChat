@@ -9,6 +9,8 @@ public class WinCap {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 '@
@@ -19,7 +21,9 @@ public class WinCap {
 $proc = Get-Process -Name $Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if (-not $proc) { Write-Output "no window for process '$Process'"; exit 1 }
 $h = $proc.MainWindowHandle
-[WinCap]::ShowWindow($h, 9) | Out-Null
+# Restoring unconditionally would silently un-maximize a maximized window and
+# make every "did maximize work?" measurement read the restored size.
+if ([WinCap]::IsIconic($h)) { [WinCap]::ShowWindow($h, 9) | Out-Null }
 [WinCap]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 600
 
@@ -34,4 +38,4 @@ New-Item -ItemType Directory -Force -Path (Split-Path $Out) | Out-Null
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose()
 $bmp.Dispose()
-Write-Output "saved $Out ($w x $ht)"
+Write-Output "saved $Out ($w x $ht, minimized=$([WinCap]::IsIconic($h)), maximized=$([WinCap]::IsZoomed($h)))"

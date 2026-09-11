@@ -1156,6 +1156,7 @@ impl KiiChat {
                 .when(controls.minimize, |this| {
                     this.child(control_button(
                         "window-minimize",
+                        "最小化",
                         IconName::WindowMinimize,
                         WindowControlArea::Min,
                         theme.secondary_hover,
@@ -1167,6 +1168,7 @@ impl KiiChat {
                 .when(controls.maximize, |this| {
                     this.child(control_button(
                         "window-maximize",
+                        if window.is_maximized() { "还原" } else { "最大化" },
                         if window.is_maximized() {
                             IconName::WindowRestore
                         } else {
@@ -1181,6 +1183,7 @@ impl KiiChat {
                 })
                 .child(control_button(
                     "window-close",
+                    "关闭",
                     IconName::WindowClose,
                     WindowControlArea::Close,
                     theme.danger,
@@ -1881,6 +1884,7 @@ const DARK_PALETTE: [u32; 28] = [
 #[allow(clippy::too_many_arguments)]
 fn control_button(
     id: &'static str,
+    label: &'static str,
     icon: IconName,
     area: WindowControlArea,
     hover: Hsla,
@@ -1890,6 +1894,8 @@ fn control_button(
 ) -> impl IntoElement {
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
         .flex()
         .w(TITLE_BAR_HEIGHT)
         .h_full()
