@@ -1,3 +1,0 @@
-cargo:rustc-env=GPUI_KIT_DEFAULT_ICONS_DIR=C:\Users\Yu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\gpui-kit-assets-0.6.1\assets/icons
-cargo:rerun-if-changed=C:\Users\Yu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\gpui-kit-assets-0.6.1\assets/icons
-cargo:rerun-if-changed=build.rs
