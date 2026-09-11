@@ -130,6 +130,19 @@ impl Theme {
     }
 }
 
+/// How outbound requests reach the network.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum Proxy {
+    /// Environment variables and the system proxy configuration (reqwest's default).
+    #[default]
+    System,
+    /// Direct connections, ignoring any system or environment proxy.
+    None,
+    /// One explicit proxy for every request.
+    Custom { url: String },
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Store {
     #[serde(default)]
@@ -142,6 +155,12 @@ pub struct Store {
     /// Color scheme, persisted across runs.
     #[serde(default)]
     pub theme: Theme,
+    /// Network path for every request.
+    #[serde(default)]
+    pub proxy: Proxy,
+    /// Whether the conversation sidebar is folded away.
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
 }
 
 impl Store {

@@ -3,6 +3,7 @@
 
 mod api;
 mod app;
+mod icons;
 mod store;
 
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
@@ -13,7 +14,7 @@ use app::KiiChat;
 
 fn main() {
     gpui_platform::application()
-        .with_assets(gpui_component_assets::Assets)
+        .with_assets(icons::Assets)
         .run(|cx: &mut App| {
             // Initializes gpui-component too, so the application never calls both.
             gpui_ai::init(cx);
@@ -30,7 +31,7 @@ fn main() {
             cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| {
                     let mut view = KiiChat::new(window, cx);
-                    view.open(window, cx);
+                    view.open(cx);
                     view
                 });
                 cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))

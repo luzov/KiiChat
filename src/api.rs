@@ -5,11 +5,12 @@
 //! Results cross back over an async channel, so the UI never blocks.
 
 use futures_lite::StreamExt as _;
+use std::error::Error as StdError;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::store::Role;
+use crate::store::{Proxy, Role};
 
 /// Events emitted while a chat completion streams.
 #[derive(Debug, Clone)]
@@ -54,12 +55,40 @@ fn spawn_runtime<T: Send + 'static>(
     rx
 }
 
-fn client(timeout: Option<Duration>) -> Result<reqwest::Client, String> {
+fn client(proxy: &Proxy, timeout: Option<Duration>) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(15));
+    builder = match proxy {
+        Proxy::System => builder,
+        Proxy::None => builder.no_proxy(),
+        Proxy::Custom { url } => {
+            let url = url.trim();
+            if url.is_empty() {
+                return Err("自定义代理地址为空".into());
+            }
+            let proxy = reqwest::Proxy::all(url)
+                .map_err(|err| format!("代理地址无效（{url}）: {err}"))?;
+            builder.proxy(proxy)
+        }
+    };
     if let Some(timeout) = timeout {
         builder = builder.timeout(timeout);
     }
     builder.build().map_err(|err| format!("无法创建 HTTP 客户端: {err}"))
+}
+
+/// Flattens a request error into one line, source chain included.
+///
+/// reqwest reports "error sending request" for every transport failure, which
+/// tells the user nothing; the cause (DNS, TLS, proxy, timeout) is one or more
+/// `source()` hops down.
+fn describe(err: &reqwest::Error) -> String {
+    let mut text = err.to_string();
+    let mut cause = StdError::source(err);
+    while let Some(error) = cause {
+        text.push_str(&format!(" → {error}"));
+        cause = error.source();
+    }
+    text
 }
 
 fn truncate(text: &str, limit: usize) -> String {
@@ -77,9 +106,10 @@ fn truncate(text: &str, limit: usize) -> String {
 pub fn fetch_models(
     base_url: String,
     api_key: String,
+    proxy: Proxy,
 ) -> async_channel::Receiver<Result<Vec<String>, String>> {
     spawn_runtime(async move {
-        let client = client(Some(Duration::from_secs(30)))?;
+        let client = client(&proxy, Some(Duration::from_secs(30)))?;
         let url = format!("{}/models", normalize_base(&base_url));
         let mut request = client.get(&url);
         if !api_key.is_empty() {
@@ -88,7 +118,7 @@ pub fn fetch_models(
         let response = request
             .send()
             .await
-            .map_err(|err| format!("请求 {url} 失败: {err}"))?;
+            .map_err(|err| format!("请求 {url} 失败: {}", describe(&err)))?;
         let status = response.status();
         let body = response
             .text()
@@ -126,6 +156,7 @@ pub fn stream_chat(
     api_key: String,
     model: String,
     messages: Vec<(Role, String)>,
+    proxy: Proxy,
     cancel: Arc<AtomicBool>,
 ) -> async_channel::Receiver<StreamEvent> {
     let (tx, rx) = async_channel::unbounded();
@@ -150,7 +181,7 @@ pub fn stream_chat(
                 }
             };
 
-            let client = match client(None) {
+            let client = match client(&proxy, None) {
                 Ok(client) => client,
                 Err(err) => {
                     send(StreamEvent::Error(err)).await;
@@ -176,7 +207,11 @@ pub fn stream_chat(
             let response = match request.send().await {
                 Ok(response) => response,
                 Err(err) => {
-                    send(StreamEvent::Error(format!("请求 {url} 失败: {err}"))).await;
+                    send(StreamEvent::Error(format!(
+                        "请求 {url} 失败: {}",
+                        describe(&err)
+                    )))
+                    .await;
                     return;
                 }
             };
@@ -200,7 +235,7 @@ pub fn stream_chat(
                 let chunk = match chunk {
                     Ok(chunk) => chunk,
                     Err(err) => {
-                        send(StreamEvent::Error(format!("连接中断: {err}"))).await;
+                        send(StreamEvent::Error(format!("连接中断: {}", describe(&err)))).await;
                         return;
                     }
                 };
