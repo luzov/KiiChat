@@ -2,8 +2,13 @@
 name = "kiichat"
 version = "0.1.0"
 edition = "2024"
-description = "A lightweight Cherry Studio-like LLM chat client built with GPUI"
+authors = ["YuCN <yuchen0010@qq.com>"]
+description = "A lightweight Cherry Studio-style chat client for OpenAI-compatible endpoints, built with GPUI"
+repository = "https://github.com/luzov/KiiChat"
+readme = "README.md"
 license = "MIT"
+keywords = ["gpui", "llm", "chat", "openai", "desktop"]
+categories = ["gui"]
 
 [dependencies]
 # GPUI stack: pinned to the version set that gpui-ai 0.8.0 was built and tested
