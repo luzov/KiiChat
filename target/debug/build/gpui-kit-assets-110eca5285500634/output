@@ -1,0 +1,4 @@
+cargo:icons-dir=C:\Users\Yu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\gpui-kit-assets-0.6.1\assets/icons
+cargo:rerun-if-changed=assets/icons
+cargo:rerun-if-changed=build.rs
+cargo:rerun-if-changed=default-icons.txt

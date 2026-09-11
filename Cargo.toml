@@ -1,0 +1,52 @@
+[package]
+name = "kiichat"
+version = "0.1.0"
+edition = "2024"
+description = "A lightweight Cherry Studio-like LLM chat client built with GPUI"
+license = "MIT"
+
+[dependencies]
+# GPUI stack: pinned to the version set that gpui-ai 0.8.0 was built and tested
+# against. `gpui-pre` is Zed's GPUI crate published as a snapshot; the rename
+# keeps `use gpui::` paths working.
+gpui = { package = "gpui-pre", version = "0.3.3" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.3", features = [
+    "font-kit",
+    "x11",
+    "wayland",
+    "runtime_shaders",
+] }
+gpui-component = "0.6.0"
+gpui-component-assets = { package = "gpui-kit-assets", version = "0.6.0" }
+gpui-base = "0.6.0"
+gpui-ai = "0.8.0"
+
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+
+# Async runtime for HTTP: reqwest needs a tokio reactor, GPUI runs on smol.
+# Requests run on a dedicated thread with a current-thread runtime and stream
+# chunks back over an async-channel.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "charset",
+    "http2",
+    "rustls-tls-native-roots",
+] }
+tokio = { version = "1", features = ["rt", "time"] }
+async-channel = "2"
+futures-lite = "2"
+directories = "6"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

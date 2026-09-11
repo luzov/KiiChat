@@ -1,0 +1,1 @@
+{"rustc":15335473461698482004,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[16235079420245028738,"build_script_build",false,15517439959375222704]],"local":[{"RerunIfChanged":{"output":"debug\\build\\gpui-kit-assets-110eca5285500634\\output","paths":["assets/icons","build.rs","default-icons.txt"]}}],"rustflags":[],"config":0,"compile_kind":0}
