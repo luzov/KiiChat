@@ -235,8 +235,40 @@ Hard rules for verification:
 - The Linux job installs GPUI's windowing dependencies; if upstream changes its
   feature set, that list is the first thing to revisit.
 
+## Open items (2026-09-11, end of session)
+
+Carried over, roughly in the order they matter:
+
+1. **Wheel scrolling of the model picker is still unverified.** Synthetic wheel
+   input never reaches the app here (see the verification note above), so the
+   picker's scroll container has not been exercised with a real wheel. If it
+   does not scroll for the user, look at the panel's parents: it is a child of
+   the `justify_between` `h_flex` in `render_model_bar`, and may need to become
+   an anchored popover instead.
+2. **The picker panel sits at the right edge** of the composer row (same
+   `justify_between` cause). It should hang under the model button.
+3. **Reasoning traces are dropped.** DeepSeek/GLM stream `reasoning_content`;
+   `api.rs` ignores it. `gpui_ai::thinking::Thinking` exists if it is worth
+   showing.
+4. **Anthropic `max_tokens` is hard-coded to 4096** in `api.rs`.
+5. **Synthetic wheel and the title-bar controls**: clicks in the top ~33px are
+   resize borders on Windows. A taller title bar or bottom-aligned controls
+   would give the buttons more room on a 200%-scaled desktop.
+6. **Only Windows is launched.** macOS/Linux compile in CI (green) but have
+   never been started.
+7. **`src/app.rs` is ~2.3k lines.** Splitting the view (sidebar, transcript,
+   settings, palette) is the cheapest quality win for the next round.
+8. **API keys are plain text** in the config file; consider saying so in the UI
+   or using an OS keychain.
+9. **A tag push is untested**: `release.yml`'s `publish` job only runs on
+   `v*` tags; `workflow_dispatch` verified the three builds and artifact
+   uploads only.
+
 ## Repository hygiene
 
+- The hub-supervised process named `kiichat` runs the **release** binary.
+  Rebuild with `cargo build --release` before judging a UI change — a stale
+  binary cost two verification rounds on 2026-09-11.
 - `target/` must never be tracked (`git ls-files | grep -c '^target/'` is 0).
 - Commit after each verified change, as `type: summary` (`feat:`, `fix:`,
   `docs:`, `chore:`), and push.
