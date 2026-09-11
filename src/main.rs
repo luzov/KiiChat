@@ -1,5 +1,9 @@
 //! KiiChat — a lightweight, Cherry Studio-style chat client for any
 //! OpenAI-compatible endpoint.
+//!
+//! Release builds are a GUI app, so Windows must not open a console window
+//! beside the main window; debug builds keep stdout for logging.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
 mod app;

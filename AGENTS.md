@@ -186,6 +186,19 @@ Hard rules for verification:
 - The app writes to the real user config. If you seed it for a test, say so and
   restore the previous file afterwards.
 
+## Packaging and CI
+
+- `src/main.rs` carries `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`:
+  a release build is a GUI app and must not open a console beside the window.
+  Debug builds keep stdout, which is where `eprintln!` diagnostics go.
+- `.github/workflows/ci.yml` builds and runs `clippy -D warnings` on
+  `windows-latest`; `.github/workflows/release.yml` builds all three platforms
+  and attaches the binaries to a GitHub Release when a `v*` tag is pushed.
+- Neither workflow runs on this machine, so a workflow change cannot be
+  verified here: keep the steps conservative and check the first run on GitHub.
+- The Linux job installs GPUI's windowing dependencies; if upstream changes its
+  feature set, that list is the first thing to revisit.
+
 ## Repository hygiene
 
 - `target/` must never be tracked (`git ls-files | grep -c '^target/'` is 0).

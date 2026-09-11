@@ -1,5 +1,7 @@
 # KiiChat
 
+[![ci](https://github.com/luzov/KiiChat/actions/workflows/ci.yml/badge.svg)](https://github.com/luzov/KiiChat/actions/workflows/ci.yml)
+
 一个轻量的、Cherry Studio 风格的桌面大模型聊天客户端，使用 [GPUI](https://gpui.rs)（Zed 的 GPU 加速 UI 框架）编写：添加任意 OpenAI 兼容的接口，一键拉取模型列表，然后直接开聊。
 
 ![浅色模式](docs/screenshot-light.png)
@@ -57,12 +59,58 @@ cargo run --release
 3. 回到对话，在输入框左下角选择模型，输入内容后回车发送。
 4. 网络需要代理时，到 **网络** 分项选择「自定义代理」并填地址（如 `http://127.0.0.1:7890`），点「应用」。
 
+## 平台支持
+
+Windows 是开发和验证平台（Windows 11 / 200% 缩放）。macOS 与 Linux 由 CI 构建，未逐项手工验证——`gpui-pre-platform` 支持这两个平台，但界面细节（尤其是自绘标题栏）可能需要各自微调。
+
 ## 兼容性
 
 任何实现了 `GET /models` 和 `POST /chat/completions`（`stream: true`）的 OpenAI 兼容接口都可以直接使用，例如：
 
 - OpenAI、DeepSeek、Moonshot / Kimi、智谱 GLM、SiliconFlow、OpenRouter
 - 本地部署：Ollama（`http://localhost:11434/v1`）、vLLM、LM Studio、one-api / new-api 网关
+
+## 数据与隐私
+
+所有状态都在一个 JSON 文件里，路径：
+
+| 系统 | 路径 |
+| --- | --- |
+| Windows | `%APPDATA%\KiiChat\config.json`（即 `C:\Users\<你>\AppData\Roaming\KiiChat\config.json`） |
+| Linux | `~/.config/KiiChat/config.json` |
+| macOS | `~/Library/Application Support/KiiChat/config.json` |
+
+里面有：供应商（**含明文 API Key**）、会话与消息、主题、代理设置、侧边栏折叠状态。删掉这个文件即可完全重置；**它不会被提交到仓库**，也请不要把它分享出去。
+
+除了你主动发起的接口请求（`{base_url}/models`、`{base_url}/chat/completions`），程序不访问任何其他网络地址，没有遥测、没有账号。
+
+## 构建与分发
+
+本地构建（首次约 6 分钟，之后增量约 1~2 分钟）：
+
+```sh
+cargo build --release     # 产物：target/release/kiichat.exe（约 25 MB）
+```
+
+想省掉本地编译，可以推一个 tag，让 GitHub Actions 直接出包：
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`release.yml` 会在 Windows / macOS / Linux 三个平台上构建并把可执行文件挂到 Release 页面；`ci.yml` 在每次推送时跑 `cargo build` + `clippy -D warnings`。
+
+发布形式：**当前是绿色单文件（portable）**，双击即用，不需要安装包——它只依赖系统自带的图形栈（Windows 10 1809+ / 带 GPU 的 macOS / Linux 桌面），不写注册表、不装服务。如果你要分发给非技术用户，再考虑下面的打包方式：
+
+| 方式 | 适用 | 需要 |
+| --- | --- | --- |
+| 便携 exe（现在） | 自己用、给同行 | 无 |
+| MSI | Windows 安装/卸载、开始菜单项 | WiX（`cargo-wix`），可选代码签名 |
+| NSIS `setup.exe` | 更小、可自定义安装向导 | NSIS 脚本 |
+| `.app` + `dmg` | macOS 分发 | `cargo-bundle`，需 Apple 签名/公证 |
+| AppImage / `.deb` | Linux 分发 | `linuxdeploy` / `cargo-deb` |
+
+注意：未签名的 exe 在别的机器上首次运行会被 SmartScreen 拦一下（“更多信息 → 仍要运行”）；要消除需要购买代码签名证书。
 
 ## 已知限制
 

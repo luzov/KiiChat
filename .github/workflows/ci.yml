@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep the artifact lean; debug info is not needed for CI checks.
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  check:
+    name: build + clippy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # GPUI pulls a large tree; a shared cache key keeps runs short.
+          workspaces: . -> target
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
