@@ -265,13 +265,12 @@ pub fn stream_chat(
                             send(StreamEvent::Error(message.to_string())).await;
                             return;
                         }
-                        if let Some(content) = value
+                        let content = value
                             .pointer("/choices/0/delta/content")
                             .and_then(|text| text.as_str())
-                        {
-                            if !content.is_empty() {
-                                send(StreamEvent::Delta(content.to_string())).await;
-                            }
+                            .unwrap_or_default();
+                        if !content.is_empty() {
+                            send(StreamEvent::Delta(content.to_string())).await;
                         }
                     }
                 }

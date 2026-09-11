@@ -97,10 +97,18 @@ scripts/       dev tooling: fake provider server + UI Automation / capture helpe
 - **Client-side decorations.** The window is created from
   `TitleBar::window_options()` and the root view emits `TitleBar` as its first
   child. Without it the title bar disappears and the window cannot be dragged.
-  Controls placed *inside* the title bar receive no clicks (its drag region
-  covers them), so the sidebar / theme / page toggles live in the toolbar the
-  main pane renders above its content — visible on both pages and while the
-  sidebar is folded away.
+- **A wide drag region swallows its siblings' clicks.** The app draws its own
+  title bar (`render_title_bar`) rather than using gpui-component's `TitleBar`,
+  which puts its children inside the element registered as
+  `WindowControlArea::Drag`. Measured on Windows: with the drag area spanning
+  the row (≈900px), clicks on the toggles beside it became window drags; with
+  the area on the title text alone (~70px), they arrive normally. So the drag
+  area covers only the `KiiChat` text, and the window controls use the areas
+  the platform hit-tests itself.
+- **Drag and double-click.** `Window::start_window_move()` is a no-op on
+  Windows (the platform leaves the default empty impl), so window moving relies
+  on that drag area; `scripts/drag.ps1` verifies a title drag moves the window
+  by the pointer delta.
 
 ## Conventions
 

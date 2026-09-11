@@ -10,23 +10,27 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Result, SharedString};
 
-/// Lucide `git-fork` — stands in for "branch this conversation".
-const GIT_FORK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/></svg>"#;
+/// Lucide `git-branch` — stands in for "branch this conversation".
+///
+/// Drawn from a 24px grid at stroke-width 2.2 rather than the upstream 2: at
+/// the 24px the component draws icon buttons, a 2px stroke over three shapes
+/// reads as a smudge, and three open circles blur into one another.
+const GIT_BRANCH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6a9 9 0 0 0-9 9V3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/></svg>"#;
 
-/// Lucide `pencil` — edit a message in place.
-const PENCIL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>"#;
+/// Lucide `square-pen` — edit a message in place.
+const SQUARE_PEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>"#;
 
-pub const GIT_FORK_PATH: &str = "icons/kiichat-git-fork.svg";
-pub const PENCIL_PATH: &str = "icons/kiichat-pencil.svg";
+pub const GIT_BRANCH_PATH: &str = "icons/kiichat-git-branch.svg";
+pub const SQUARE_PEN_PATH: &str = "icons/kiichat-square-pen.svg";
 
-/// The bundled component assets plus [`GIT_FORK_PATH`] and [`PENCIL_PATH`].
+/// The bundled component assets plus [`GIT_BRANCH_PATH`] and [`SQUARE_PEN_PATH`].
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let extra = match path {
-            GIT_FORK_PATH => Some(GIT_FORK),
-            PENCIL_PATH => Some(PENCIL),
+            GIT_BRANCH_PATH => Some(GIT_BRANCH),
+            SQUARE_PEN_PATH => Some(SQUARE_PEN),
             _ => None,
         };
         if let Some(svg) = extra {
@@ -37,7 +41,7 @@ impl AssetSource for Assets {
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = gpui_component_assets::Assets.list(path)?;
-        for extra in [GIT_FORK_PATH, PENCIL_PATH] {
+        for extra in [GIT_BRANCH_PATH, SQUARE_PEN_PATH] {
             if extra.starts_with(path) {
                 paths.push(extra.into());
             }

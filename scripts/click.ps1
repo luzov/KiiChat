@@ -22,8 +22,15 @@ if (-not $proc) { Write-Output "no window"; exit 1 }
 [Clicky]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
 Start-Sleep -Milliseconds 500
 
+# Two-phase move: a real pointer streams WM_MOUSEMOVE, which is what the
+# platform's window-control hit test reads. Parking elsewhere first lets the
+# app's hit test catch up before the press.
+$parkX = [int](($X + 400) % 1000)
+$parkY = [int](($Y + 300) % 900)
+[Clicky]::SetCursorPos($parkX, $parkY) | Out-Null
+Start-Sleep -Milliseconds 300
 [Clicky]::SetCursorPos($X, $Y) | Out-Null
-Start-Sleep -Milliseconds 250
+Start-Sleep -Milliseconds 300
 $p = New-Object Clicky+POINT
 [Clicky]::GetCursorPos([ref]$p) | Out-Null
 [Clicky]::mouse_event(0x02, 0, 0, 0, [IntPtr]::Zero)

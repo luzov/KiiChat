@@ -11,7 +11,8 @@ use std::sync::Arc;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, ElementId, Entity,
     FollowMode, Hsla, IntoElement, ListAlignment, ListState, ParentElement, Render, SharedString,
-    Styled, Subscription, Window, div, list, prelude::*, px, relative, rgb,
+    WindowControlArea,
+    Pixels, Styled, Subscription, Window, div, list, prelude::*, px, relative, rgb,
 };
 use gpui_ai::orbs::Orbs;
 use gpui_ai::prompt_bar::{PromptBar, PromptBarEvent, PromptModel};
@@ -24,7 +25,7 @@ use gpui_component::text::TextView;
 
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
-    StyledExt as _, Theme as ThemeGlobal, ThemeColor, ThemeMode, TitleBar, h_flex, v_flex,
+    StyledExt as _, Theme as ThemeGlobal, ThemeColor, ThemeMode, h_flex, v_flex,
 };
 
 use crate::api::{self, StreamEvent};
@@ -32,6 +33,8 @@ use crate::icons;
 use crate::store::{Msg, Provider, Proxy, Role, Session, Store, Theme};
 
 const SIDEBAR_WIDTH: f32 = 232.;
+/// Matches gpui-component's title bar height, so the window controls line up.
+const TITLE_BAR_HEIGHT: Pixels = px(34.);
 const DEFAULT_TITLE: &str = "新对话";
 
 
@@ -1054,25 +1057,39 @@ impl KiiChat {
             .into_any_element()
     }
 
-    /// The always-visible toolbar: sidebar toggle, theme toggle, page toggle.
+    /// The window's own title bar: the title, the sidebar toggle, then the
+    /// app's toggles and the system window controls.
     ///
-    /// It lives here rather than in the title bar, whose drag region swallows
-    /// clicks on anything drawn inside it.
-    fn render_toolbar(&self, dark: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// gpui-component's `TitleBar` cannot host controls, and neither can a
+    /// drag region that sits in the same row: on Windows the platform reads a
+    /// registered `WindowControlArea::Drag` for the whole row, so clicks on
+    /// anything beside it become window drags. Only the title text carries the
+    /// drag area; every control is a sibling of it.
+    fn render_title_bar(
+        &self,
+        window: &mut Window,
+        dark: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme();
         let collapsed = self.store.sidebar_collapsed;
         let in_settings = self.page == Page::Settings;
+        let controls = window.window_controls();
 
-        h_flex()
+        let mut left = h_flex()
             .flex_none()
-            .items_center()
-            .justify_between()
-            .gap_1()
-            .px_3()
-            .py_1()
-            .border_b_1()
-            .border_color(theme.border)
+            .gap_2()
+            .pl_3()
             .child(
+                div()
+                    .id("title-drag")
+                    .text_sm()
+                    .font_semibold()
+                    .window_control_area(WindowControlArea::Drag)
+                    .child("KiiChat"),
+            );
+        if !in_settings {
+            left = left.child(
                 Button::new("toggle-sidebar")
                     .icon(if collapsed {
                         IconName::PanelLeftOpen
@@ -1088,41 +1105,91 @@ impl KiiChat {
                         this.persist(cx);
                         cx.notify();
                     })),
+            );
+        }
+
+        let mut bar = h_flex()
+            .flex_shrink_0()
+            .w_full()
+            .h(TITLE_BAR_HEIGHT)
+            .items_center()
+            .bg(theme.title_bar)
+            .border_b_1()
+            .border_color(theme.title_bar_border)
+            .text_color(theme.foreground)
+            .child(left)
+            .child(div().flex_1().min_w_0())
+            .child(
+                Button::new("toggle-theme")
+                    .icon(if dark { IconName::Sun } else { IconName::Moon })
+                    .ghost()
+                    .small()
+                    .tooltip(if dark { "切换到浅色" } else { "切换到深色" })
+                    .accessibility_label("切换深浅色")
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_theme(window, cx))),
             )
             .child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Button::new("toggle-theme")
-                            .icon(if dark { IconName::Sun } else { IconName::Moon })
-                            .ghost()
-                            .small()
-                            .tooltip(if dark { "切换到浅色" } else { "切换到深色" })
-                            .accessibility_label("切换深浅色")
-                            .on_click(cx.listener(|this, _, window, cx| this.toggle_theme(window, cx))),
-                    )
-                    .child(
-                        Button::new("toggle-page")
-                            .icon(if in_settings {
-                                IconName::ArrowLeft
-                            } else {
-                                IconName::Settings
-                            })
-                            .ghost()
-                            .small()
-                            .tooltip(if in_settings { "返回对话" } else { "设置" })
-                            .accessibility_label(if in_settings { "返回对话" } else { "设置" })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.page == Page::Settings {
-                                    this.page = Page::Chat;
-                                    cx.notify();
-                                } else {
-                                    this.show_settings(window, cx);
-                                }
-                            })),
-                    ),
-            )
-            .into_any_element()
+                Button::new("toggle-page")
+                    .icon(if in_settings {
+                        IconName::ArrowLeft
+                    } else {
+                        IconName::Settings
+                    })
+                    .ghost()
+                    .small()
+                    .tooltip(if in_settings { "返回对话" } else { "设置" })
+                    .accessibility_label(if in_settings { "返回对话" } else { "设置" })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.page == Page::Settings {
+                            this.page = Page::Chat;
+                            cx.notify();
+                        } else {
+                            this.show_settings(window, cx);
+                        }
+                    })),
+            );
+
+        // macOS draws its own controls; everywhere else the platform hit-tests
+        // the areas below (Windows) or we drive them by hand.
+        if !cfg!(target_os = "macos") {
+            bar = bar
+                .when(controls.minimize, |this| {
+                    this.child(control_button(
+                        "window-minimize",
+                        IconName::WindowMinimize,
+                        WindowControlArea::Min,
+                        theme.secondary_hover,
+                        theme.secondary_active,
+                        theme.foreground,
+                        |window, _| window.minimize_window(),
+                    ))
+                })
+                .when(controls.maximize, |this| {
+                    this.child(control_button(
+                        "window-maximize",
+                        if window.is_maximized() {
+                            IconName::WindowRestore
+                        } else {
+                            IconName::WindowMaximize
+                        },
+                        WindowControlArea::Max,
+                        theme.secondary_hover,
+                        theme.secondary_active,
+                        theme.foreground,
+                        |window, _| window.zoom_window(),
+                    ))
+                })
+                .child(control_button(
+                    "window-close",
+                    IconName::WindowClose,
+                    WindowControlArea::Close,
+                    theme.danger,
+                    theme.danger_active,
+                    theme.danger_foreground,
+                    |window, _| window.remove_window(),
+                ));
+        }
+        bar.into_any_element()
     }
 
     fn render_welcome(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1213,7 +1280,8 @@ impl KiiChat {
             )))
             .min_w_0()
             .max_w(relative(0.82))
-            .gap_1()
+            // Room between the answer and the actions under it.
+            .gap(px(12.))
             .px_3()
             .py_2()
             .rounded(theme.radius_lg)
@@ -1286,7 +1354,10 @@ impl KiiChat {
         });
 
         let mut actions = h_flex()
+            .w_full()
             .gap(px(2.))
+            // User bubbles hug the right edge, replies the left.
+            .when(is_user, |this| this.justify_end())
             .child(
                 Button::new(("copy", index))
                     .icon(IconName::Copy)
@@ -1298,7 +1369,7 @@ impl KiiChat {
             )
             .child(
                 Button::new(("branch", index))
-                    .icon(Icon::empty().path(icons::GIT_FORK_PATH))
+                    .icon(Icon::empty().path(icons::GIT_BRANCH_PATH))
                     .ghost()
                     .small()
                     .tooltip("以此消息为起点新建会话")
@@ -1309,7 +1380,7 @@ impl KiiChat {
         if is_user {
             actions = actions.child(
                 Button::new(("edit", index))
-                    .icon(Icon::empty().path(icons::PENCIL_PATH))
+                    .icon(Icon::empty().path(icons::SQUARE_PEN_PATH))
                     .ghost()
                     .small()
                     .tooltip("编辑并重发")
@@ -1657,12 +1728,12 @@ impl KiiChat {
 }
 
 impl Render for KiiChat {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let background = cx.theme().background;
         let dark = self.store.theme.is_dark();
         let collapsed = self.store.sidebar_collapsed;
+        let title_bar = self.render_title_bar(window, dark, cx);
         let sidebar = self.render_sidebar(cx);
-        let toolbar = self.render_toolbar(dark, cx);
         let page = match self.page {
             Page::Chat => self.render_chat(cx),
             Page::Settings => self.render_settings(cx),
@@ -1672,28 +1743,14 @@ impl Render for KiiChat {
             .size_full()
             .min_w_0()
             .bg(background)
-            .child(
-                TitleBar::new().child(
-                    h_flex()
-                        .w_full()
-                        .pr_2()
-                        .child(div().pl_2().text_sm().font_semibold().child("KiiChat")),
-                ),
-            )
+            .child(title_bar)
             .child(
                 h_flex()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
                     .when(!collapsed, |this| this.child(sidebar))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .child(toolbar)
-                            .child(page),
-                    ),
+                    .child(div().flex_1().min_w_0().h_full().child(page)),
             )
     }
 }
@@ -1816,6 +1873,43 @@ const DARK_PALETTE: [u32; 28] = [
     0x23262e, // title_bar_border
     0x3a3f4d, // scrollbar_thumb
 ];
+
+/// One system window control.
+///
+/// On Windows the platform hit-tests the registered area and performs the
+/// action itself, so the handler is only wired where that is not the case.
+#[allow(clippy::too_many_arguments)]
+fn control_button(
+    id: &'static str,
+    icon: IconName,
+    area: WindowControlArea,
+    hover: Hsla,
+    active: Hsla,
+    ink: Hsla,
+    action: fn(&mut Window, &mut App),
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex()
+        .w(TITLE_BAR_HEIGHT)
+        .h_full()
+        .flex_shrink_0()
+        .justify_center()
+        .items_center()
+        .text_color(ink)
+        .when(cfg!(target_os = "windows"), |this| {
+            this.window_control_area(area)
+        })
+        .when(!cfg!(target_os = "windows"), |this| {
+            this.on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                action(window, cx);
+            })
+        })
+        .hover(move |style| style.bg(hover))
+        .active(move |style| style.bg(active).text_color(ink))
+        .child(Icon::new(icon).small())
+}
 
 fn theme_mode(theme: Theme) -> ThemeMode {
     if theme.is_dark() {

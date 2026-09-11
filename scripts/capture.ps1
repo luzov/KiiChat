@@ -19,7 +19,7 @@ public class WinCap {
 $proc = Get-Process -Name $Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if (-not $proc) { Write-Output "no window for process '$Process'"; exit 1 }
 $h = $proc.MainWindowHandle
-[WinCap]::ShowWindow($h, 5) | Out-Null
+[WinCap]::ShowWindow($h, 9) | Out-Null
 [WinCap]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 600
 
