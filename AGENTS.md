@@ -143,7 +143,9 @@ compile proves nothing about layout.
 
 2. **Drive it without a keyboard.** `scripts/invoke.ps1 -Name <label>` invokes a
    named button through UI Automation (use `-NameB64` for Chinese labels, e.g.
-   `5aSx6LSl6YeN6K+V` is 失败重试 — the base64 of the UTF-8 name).
+   `6YeN6K+V` is 重试 — the base64 of the UTF-8 name; `scripts/buttons.ps1`
+   prints the base64 of every button name it finds, so you never have to
+   encode one by hand).
    `scripts/click.ps1 -X -Y` synthesizes a real click and sets DPI awareness
    first; without that a 200%-scaled desktop aims at half the intended point.
 
