@@ -284,3 +284,63 @@ impl Store {
         self.provider(id)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider(api: ApiFormat) -> Provider {
+        let mut provider = Provider::new("Mock", "http://127.0.0.1:18080/v1");
+        provider.api = api;
+        provider.models = vec!["mock-mini".into()];
+        provider
+    }
+
+    /// The API format names are part of the config file's contract: a spelling
+    /// the app writes but cannot read resets a provider to Chat Completions.
+    #[test]
+    fn api_formats_round_trip() {
+        for api in ApiFormat::ALL {
+            let store = Store {
+                providers: vec![provider(api)],
+                ..Store::default()
+            };
+            let text = serde_json::to_string(&store).expect("serialize");
+            let parsed: Store = serde_json::from_str(&text).expect("parse");
+            assert_eq!(parsed.providers[0].api, api, "round trip: {text}");
+        }
+    }
+
+    /// A config written by an earlier release has no `api` field at all.
+    #[test]
+    fn config_without_api_defaults_to_chat_completions() {
+        let text = r#"{
+            "providers": [{
+                "id": "p", "name": "Mock", "base_url": "http://127.0.0.1:18080/v1",
+                "api_key": "k", "models": ["mock-mini"]
+            }],
+            "sessions": [],
+            "selected_provider": "p"
+        }"#;
+        let store: Store = serde_json::from_str(text).expect("parse");
+        assert_eq!(store.providers[0].api, ApiFormat::OpenAiCompletions);
+        assert_eq!(store.theme, Theme::Light);
+        assert_eq!(store.proxy, Proxy::System);
+    }
+
+    /// The names on the wire are the ones the settings buttons promise.
+    #[test]
+    fn api_format_names_are_stable() {
+        assert_eq!(
+            serde_json::to_string(&ApiFormat::OpenAiCompletions).unwrap(),
+            "\"openai-completions\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ApiFormat::OpenAiResponses).unwrap(),
+            "\"openai-responses\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ApiFormat::AnthropicMessages).unwrap(),
+            "\"anthropic-messages\""
+        );
+    }
+}

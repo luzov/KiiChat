@@ -237,32 +237,43 @@ Hard rules for verification:
 
 ## Open items (2026-09-11, end of session)
 
-Carried over, roughly in the order they matter:
+Only what has been observed, with the evidence that showed it:
 
-1. **Wheel scrolling of the model picker is still unverified.** Synthetic wheel
-   input never reaches the app here (see the verification note above), so the
-   picker's scroll container has not been exercised with a real wheel. If it
-   does not scroll for the user, look at the panel's parents: it is a child of
-   the `justify_between` `h_flex` in `render_model_bar`, and may need to become
-   an anchored popover instead.
-2. **The picker panel sits at the right edge** of the composer row (same
-   `justify_between` cause). It should hang under the model button.
-3. **Reasoning traces are dropped.** DeepSeek/GLM stream `reasoning_content`;
-   `api.rs` ignores it. `gpui_ai::thinking::Thinking` exists if it is worth
-   showing.
-4. **Anthropic `max_tokens` is hard-coded to 4096** in `api.rs`.
-5. **Synthetic wheel and the title-bar controls**: clicks in the top ~33px are
-   resize borders on Windows. A taller title bar or bottom-aligned controls
-   would give the buttons more room on a 200%-scaled desktop.
-6. **Only Windows is launched.** macOS/Linux compile in CI (green) but have
-   never been started.
-7. **`src/app.rs` is ~2.3k lines.** Splitting the view (sidebar, transcript,
-   settings, palette) is the cheapest quality win for the next round.
-8. **API keys are plain text** in the config file; consider saying so in the UI
-   or using an OS keychain.
-9. **A tag push is untested**: `release.yml`'s `publish` job only runs on
-   `v*` tags; `workflow_dispatch` verified the three builds and artifact
-   uploads only.
+1. **The model picker's wheel scrolling is unverified.** Synthetic wheel input
+   never reaches the app here — `mouse_event` and `SendInput` both left a
+   976px-tall list inside a 220px scroll area where it was, and the settings
+   page (a scroll container) did not move either. Ask the user to roll a real
+   wheel; if it does not scroll, look at the panel's parents, not the input
+   path.
+2. **The picker panel renders at the right edge** of the composer row: its rows
+   report `x=2222..2470` while the transcript pane starts at `x=848`. It is a
+   child of the `justify_between` `h_flex` in `render_model_bar`.
+3. **Reasoning traces are dropped.** `api.rs` extracts only content deltas;
+   DeepSeek/GLM `reasoning_content` and Anthropic `thinking_delta` are ignored.
+4. **Anthropic `max_tokens` is hard-coded to 4096** (`api.rs`).
+5. **The top of the window is a resize band.** gpui_windows computes frame
+   thickness itself when the OS title bar is hidden, so clicks a few logical
+   pixels below the top edge resize instead — measured when a stray click
+   shrank the window to 314x50. Controls in a 34px title bar sit close to it.
+6. **Only Windows has been launched.** macOS and Linux compile in CI (green on
+   v0.1.0) but have never been run.
+7. **`src/app.rs` is ~2.3k lines**; splitting the view (sidebar, transcript,
+   settings, palette) is the cheapest quality win available.
+8. **API keys sit in plain text** in the config file.
+9. **`publish` was exercised once**, on the v0.1.0 tag: all four jobs green and
+   three binaries attached. Nothing else about tagging has been tested.
+
+## Verification rules learned the hard way
+
+- `scripts/buttons.ps1` overwrites its report file even when it finds no
+  window, and prints how many rows it wrote. Read that line: suppressing the
+  script's own output and reading the file can serve the *previous* run's dump.
+- The hub-supervised process named `kiichat` runs the **release** binary.
+  `cargo build --release` before judging a UI change, and check the build
+  actually succeeded — a stale binary cost two verification rounds.
+- A seeded config must be checked against `src/store.rs`'s field names; a
+  config the app cannot parse used to start it empty (now it is moved to
+  `config.json.invalid` with a notice).
 
 ## Repository hygiene
 

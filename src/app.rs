@@ -2284,20 +2284,8 @@ fn endpoint_hint(base_url: &str, api: ApiFormat, muted: Hsla) -> AnyElement {
         .gap(px(2.))
         .text_xs()
         .text_color(muted)
-        .child(
-            div()
-                .id("endpoint-dialogue")
-                .role(gpui::Role::Label)
-                .aria_label(dialogue.clone())
-                .child(dialogue),
-        )
-        .child(
-            div()
-                .id("endpoint-models")
-                .role(gpui::Role::Label)
-                .aria_label(models.clone())
-                .child(models),
-        )
+        .child(div().child(dialogue))
+        .child(div().child(models))
         .into_any_element()
 }
 
