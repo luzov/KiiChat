@@ -22,7 +22,8 @@
 
 ## 功能
 
-- **模型供应商**：填写 Base URL 与 API Key，点一次「获取模型」从 `{base_url}/models` 拉取模型列表；竖向列表维护多个供应商，随时切换「当前」。
+- **模型供应商**：填写 Base URL 与 API Key，选择接口格式（OpenAI Chat Completions / OpenAI Responses / Anthropic Messages），点一次「获取模型」拉取模型列表，再勾选要保留的模型；竖向列表维护多个供应商，随时切换「当前」。输入框下方实时预览将要请求的完整地址。
+- **模型选择**：输入框上方有模型选择器，支持搜索过滤；当前会话的模型单独记忆。
 - **会话管理**：左侧竖向会话列表，新建 / 切换 / 删除，标题自动取自第一条消息。
 - **流式对话**：SSE 逐字输出，Markdown 渲染（含代码块高亮）；消息下方的方形图标按钮提供「复制 / 分支 / 重试」，用户消息另外可以「编辑」并重发。回复失败时重试按钮会展开成红色的「重试」，失败原因直接显示在气泡里。
 - **折叠侧边栏**：一键收起会话列表，专注当前对话，状态会记住。
@@ -65,7 +66,15 @@ Windows 是开发和验证平台（Windows 11 / 200% 缩放）。macOS 与 Linux
 
 ## 兼容性
 
-任何实现了 `GET /models` 和 `POST /chat/completions`（`stream: true`）的 OpenAI 兼容接口都可以直接使用，例如：
+支持三种接口格式：
+
+| 格式 | 对话接口 | 模型列表 | 鉴权 |
+| --- | --- | --- | --- |
+| OpenAI Chat Completions | `POST /chat/completions` | `GET /models` | `Authorization: Bearer` |
+| OpenAI Responses | `POST /responses` | `GET /models` | `Authorization: Bearer` |
+| Anthropic Messages（Claude） | `POST /messages` | `GET /models` | `x-api-key` + `anthropic-version` |
+
+任何实现其中一种的接口都可以直接使用，例如：
 
 - OpenAI、DeepSeek、Moonshot / Kimi、智谱 GLM、SiliconFlow、OpenRouter
 - 本地部署：Ollama（`http://localhost:11434/v1`）、vLLM、LM Studio、one-api / new-api 网关

@@ -69,6 +69,21 @@ scripts/       dev tooling: fake provider server + UI Automation / capture helpe
   without `.size_full()` it lays out to zero height and paints nothing.
 - **Persist on transitions, not on deltas.** `Store::save` after a send
   completes, a session/provider/theme/proxy changes — never per SSE chunk.
+- **Three API shapes live behind one setting.** `store::ApiFormat` picks
+  `/chat/completions`, `/responses` or `/messages`; `api.rs` owns the request
+  body, the auth scheme (`Bearer` vs `x-api-key` + `anthropic-version`) and the
+  delta extraction per shape. The serde names are written out per variant —
+  `rename_all = "kebab-case"` would have produced `open-ai-completions`.
+- **A config the app cannot read is moved aside, never ignored.** `Store::load`
+  returns the store plus a warning; on a parse error the file becomes
+  `config.json.invalid` and the UI explains it. Starting empty and then saving
+  is how a single bad field would otherwise destroy every provider.
+- **Fetched models are a menu, not a save.** `获取模型` fills `Editor::fetched`
+  and the user ticks what to keep; only 保存 writes them into the provider.
+- **The composer's own model menu is not used for selection.** gpui-ai renders
+  it inside a popup layer; scrolling it with the wheel does nothing, so the
+  composer is handed only the current model and this app renders its own
+  searchable picker above the composer (`render_model_bar`).
 - **Proxy modes are resolved per request** in `api::client`: `System` keeps
   reqwest's default (env + OS proxy), `None` calls `.no_proxy()`, `Custom`
   installs `reqwest::Proxy::all(url)`. An empty custom URL is an error, not a
@@ -156,7 +171,19 @@ compile proves nothing about layout.
    console mangles Chinese; read that file. It is the fastest way to confirm
    that rows, actions and settings controls really rendered.
 
-2. **Drive it without a keyboard.** `scripts/invoke.ps1 -Name <label>` invokes a
+2. **Read text back, not just buttons.** `scripts/buttons.ps1 -All` lists every
+   element with its accessible name and rect (UTF-8 into
+   `%TEMP%\kiichat-buttons.txt`); `scripts/setvalue.ps1 -Name <label> -Value <v>`
+   types into a field through UI Automation — that is how the model search was
+   verified (typing `model-1` cut 16 rows to 7).
+
+3. **Synthetic wheel input does not reach the app.** Measured with both
+   `mouse_event` and `SendInput`: a 976px-tall list inside a 220px scroll area
+   does not move, and neither does a page known to be scrollable. Verify scroll
+   regions by dragging the scrollbar, or ask the user to roll the wheel; do not
+   read "it did not scroll" as proof the container is broken.
+
+4. **Drive it without a keyboard.** `scripts/invoke.ps1 -Name <label>` invokes a
    named button through UI Automation (use `-NameB64` for Chinese labels, e.g.
    `6YeN6K+V` is 重试 — the base64 of the UTF-8 name; `scripts/buttons.ps1`
    prints the base64 of every button name it finds, so you never have to
@@ -164,17 +191,19 @@ compile proves nothing about layout.
    `scripts/click.ps1 -X -Y` synthesizes a real click and sets DPI awareness
    first; without that a 200%-scaled desktop aims at half the intended point.
 
-3. **Exercise the network path against a fake provider**:
+5. **Exercise every API shape against the fake provider**:
 
    ```sh
    python scripts/mock_openai.py   # /v1/models plus a streaming completion on 127.0.0.1:18080
    ```
 
-   Point a provider's Base URL at `http://127.0.0.1:18080/v1`, then check the
-   server log for the request and `%APPDATA%\KiiChat\config.json` for the
-   persisted streamed answer.
+   `scripts/mock_openai.py` serves all three shapes and asserts each request's
+   shape (Bearer + `messages`, Bearer + `input`, `x-api-key` + `max_tokens`), so
+   a reply that arrives proves the request was built for that API. Point a
+   provider at `http://127.0.0.1:18080/v1`, then check the server log and
+   `%APPDATA%\KiiChat\config.json` for the persisted streamed answer.
 
-4. **Verify visually without eyes.** Capture, then measure:
+6. **Verify visually without eyes.** Capture, then measure:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts/capture.ps1 -Out D:/tmp/shot.png

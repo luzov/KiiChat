@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::store::{Proxy, Role};
+use crate::store::{ApiFormat, Proxy, Role};
 
 /// Events emitted while a chat completion streams.
 #[derive(Debug, Clone)]
@@ -34,6 +34,93 @@ pub fn normalize_base(raw: &str) -> String {
         format!("{trimmed}/v1")
     } else {
         trimmed
+    }
+}
+
+/// The conversation in Chat Completions shape.
+fn chat_messages(messages: &[(Role, String)]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|(role, content)| {
+            serde_json::json!({
+                "role": role.wire(),
+                "content": content,
+            })
+        })
+        .collect()
+}
+
+/// The conversation in Responses shape: an item list with typed messages.
+fn responses_input(messages: &[(Role, String)]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .filter(|(role, _)| *role != Role::System)
+        .map(|(role, content)| {
+            let kind = if *role == Role::Assistant {
+                "output_text"
+            } else {
+                "input_text"
+            };
+            serde_json::json!({
+                "role": role.wire(),
+                "content": [{ "type": kind, "text": content }],
+            })
+        })
+        .collect()
+}
+
+/// The conversation in Messages shape: system turns are lifted out (they are a
+/// top-level field), the rest keep their role and content.
+fn anthropic_messages(messages: &[(Role, String)]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .filter(|(role, _)| *role != Role::System)
+        .map(|(role, content)| {
+            serde_json::json!({
+                "role": role.wire(),
+                "content": content,
+            })
+        })
+        .collect()
+}
+
+fn system_prompt(messages: &[(Role, String)]) -> String {
+    messages
+        .iter()
+        .filter(|(role, _)| *role == Role::System)
+        .map(|(_, content)| content.clone())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The text a stream delta carries, per API shape.
+fn delta_text(api: ApiFormat, value: &serde_json::Value) -> Option<String> {
+    let text = match api {
+        ApiFormat::OpenAiCompletions => value
+            .pointer("/choices/0/delta/content")
+            .and_then(|text| text.as_str()),
+        ApiFormat::OpenAiResponses => match value.get("type").and_then(|kind| kind.as_str()) {
+            // OpenAI emits one of these per chunk, plus a final `...done`.
+            Some("response.output_text.delta") => {
+                value.get("delta").and_then(|text| text.as_str())
+            }
+            _ => None,
+        },
+        ApiFormat::AnthropicMessages => match value.get("type").and_then(|kind| kind.as_str()) {
+            Some("content_block_delta") => value.pointer("/delta/text").and_then(|text| text.as_str()),
+            _ => None,
+        },
+    }?;
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Whether an event closes the stream (beyond the `[DONE]` sentinel).
+fn is_final_event(api: ApiFormat, value: &serde_json::Value) -> bool {
+    let kind = value.get("type").and_then(|kind| kind.as_str());
+    match api {
+        ApiFormat::OpenAiCompletions => false,
+        ApiFormat::OpenAiResponses => matches!(kind, Some("response.completed") | Some("response.failed")),
+        ApiFormat::AnthropicMessages => matches!(kind, Some("message_stop")),
     }
 }
 
@@ -100,21 +187,40 @@ fn truncate(text: &str, limit: usize) -> String {
     format!("{head}…")
 }
 
+/// Applies a provider's authentication scheme to a request.
+fn authorize(
+    request: reqwest::RequestBuilder,
+    api: ApiFormat,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    if api_key.is_empty() {
+        return request;
+    }
+    match api {
+        // Anthropic authenticates with a key header and an API version, and
+        // rejects requests that carry a bearer token instead.
+        ApiFormat::AnthropicMessages => request
+            .header("x-api-key", api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION),
+        _ => request.bearer_auth(api_key),
+    }
+}
+
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
 /// Fetches the provider's model list from `{base_url}/models`.
 ///
 /// The receiver yields exactly one result and then closes.
 pub fn fetch_models(
     base_url: String,
     api_key: String,
+    api: ApiFormat,
     proxy: Proxy,
 ) -> async_channel::Receiver<Result<Vec<String>, String>> {
     spawn_runtime(async move {
         let client = client(&proxy, Some(Duration::from_secs(30)))?;
         let url = format!("{}/models", normalize_base(&base_url));
-        let mut request = client.get(&url);
-        if !api_key.is_empty() {
-            request = request.bearer_auth(&api_key);
-        }
+        let request = authorize(client.get(&url), api, &api_key);
         let response = request
             .send()
             .await
@@ -154,6 +260,7 @@ pub fn fetch_models(
 pub fn stream_chat(
     base_url: String,
     api_key: String,
+    api: ApiFormat,
     model: String,
     messages: Vec<(Role, String)>,
     proxy: Proxy,
@@ -188,22 +295,38 @@ pub fn stream_chat(
                     return;
                 }
             };
-            let url = format!("{}/chat/completions", normalize_base(&base_url));
-            let body = serde_json::json!({
-                "model": model,
-                "stream": true,
-                "messages": messages
-                    .iter()
-                    .map(|(role, content)| serde_json::json!({
-                        "role": role.wire(),
-                        "content": content,
-                    }))
-                    .collect::<Vec<_>>(),
-            });
-            let mut request = client.post(&url).json(&body);
-            if !api_key.is_empty() {
-                request = request.bearer_auth(&api_key);
-            }
+            let base = normalize_base(&base_url);
+            let (url, body) = match api {
+                ApiFormat::OpenAiCompletions => (
+                    format!("{base}/chat/completions"),
+                    serde_json::json!({
+                        "model": model,
+                        "stream": true,
+                        "messages": chat_messages(&messages),
+                    }),
+                ),
+                ApiFormat::OpenAiResponses => (
+                    format!("{base}/responses"),
+                    serde_json::json!({
+                        "model": model,
+                        "stream": true,
+                        "input": responses_input(&messages),
+                    }),
+                ),
+                ApiFormat::AnthropicMessages => (
+                    format!("{base}/messages"),
+                    serde_json::json!({
+                        "model": model,
+                        "stream": true,
+                        // The Messages API has no `system` role in `messages`
+                        // and requires a token budget.
+                        "max_tokens": 4096,
+                        "system": system_prompt(&messages),
+                        "messages": anthropic_messages(&messages),
+                    }),
+                ),
+            };
+            let request = authorize(client.post(&url).json(&body), api, &api_key);
             let response = match request.send().await {
                 Ok(response) => response,
                 Err(err) => {
@@ -258,19 +381,22 @@ pub fn stream_chat(
                         let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
                             continue;
                         };
+                        // Errors are shaped the same way in all three APIs: a
+                        // message nested under `error`.
                         if let Some(message) = value
                             .pointer("/error/message")
+                            .or_else(|| value.pointer("/error/type"))
                             .and_then(|message| message.as_str())
                         {
                             send(StreamEvent::Error(message.to_string())).await;
                             return;
                         }
-                        let content = value
-                            .pointer("/choices/0/delta/content")
-                            .and_then(|text| text.as_str())
-                            .unwrap_or_default();
-                        if !content.is_empty() {
-                            send(StreamEvent::Delta(content.to_string())).await;
+                        if let Some(content) = delta_text(api, &value) {
+                            send(StreamEvent::Delta(content)).await;
+                        }
+                        if is_final_event(api, &value) {
+                            send(StreamEvent::Done).await;
+                            return;
                         }
                     }
                 }

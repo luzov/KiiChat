@@ -5,6 +5,7 @@
 //! `gpui-ai` snapshots to render. A completion runs on a worker thread; the UI
 //! task only appends deltas and re-snapshots.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -19,7 +20,8 @@ use gpui_ai::prompt_bar::{PromptBar, PromptBarEvent, PromptModel};
 use gpui_ai::stream::{ProgressState, StreamedContent};
 use gpui_ai::streaming_text::StreamingText;
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_component::checkbox::Checkbox;
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::text::TextView;
 
@@ -30,7 +32,7 @@ use gpui_component::{
 
 use crate::api::{self, StreamEvent};
 use crate::icons;
-use crate::store::{Msg, Provider, Proxy, Role, Session, Store, Theme};
+use crate::store::{ApiFormat, Msg, Provider, Proxy, Role, Session, Store, Theme};
 
 const SIDEBAR_WIDTH: f32 = 232.;
 /// Matches gpui-component's title bar height, so the window controls line up.
@@ -95,8 +97,14 @@ struct Stream {
 struct Editor {
     /// `None` while composing a new provider.
     id: Option<String>,
-    /// Models fetched but not yet attached to a saved provider.
+    /// The models saved for this provider.
     models: Vec<String>,
+    /// Everything the provider reported, while the user picks from it.
+    fetched: Vec<String>,
+    /// The models of `fetched` the user has ticked.
+    picked: HashSet<String>,
+    /// Request/response shape this provider speaks.
+    api: ApiFormat,
     status: SharedString,
     fetching: bool,
 }
@@ -117,6 +125,11 @@ pub struct KiiChat {
     base_input: Entity<InputState>,
     key_input: Entity<InputState>,
     proxy_input: Entity<InputState>,
+    /// Search boxes: the settings model list and the composer's picker.
+    models_search: Entity<InputState>,
+    picker_search: Entity<InputState>,
+    /// Whether the composer's model picker is open.
+    picker_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -134,16 +147,35 @@ impl KiiChat {
             cx.new(|cx| InputState::new(window, cx).placeholder("API Key").masked(true));
         let proxy_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("http://127.0.0.1:7890"));
-        let subscriptions = vec![cx.subscribe_in(
+        let models_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("搜索模型，例如 deepseek")
+        });
+        let picker_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("搜索模型"));
+        // Each search box re-renders the view as it is typed into.
+        let mut subscriptions = vec![cx.subscribe_in(
             &prompt,
             window,
             |this: &mut Self, _, event: &PromptBarEvent, window, cx| {
                 this.on_prompt_event(event, window, cx);
             },
         )];
+        let mut live_inputs = vec![&models_search, &picker_search, &base_input];
+        for search in live_inputs.drain(..) {
+            subscriptions.push(cx.subscribe_in(
+                search,
+                window,
+                |_this: &mut Self, _, event: &InputEvent, _, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                },
+            ));
+        }
 
-        let this = Self {
-            store: Store::load(),
+        let (store, warning) = Store::load();
+        let mut this = Self {
+            store,
             page: Page::Chat,
             section: Section::Models,
             prompt,
@@ -157,6 +189,9 @@ impl KiiChat {
             base_input,
             key_input,
             proxy_input,
+            models_search,
+            picker_search,
+            picker_open: false,
             _subscriptions: subscriptions,
         };
         if let Proxy::Custom { url } = this.store.proxy.clone() {
@@ -166,6 +201,9 @@ impl KiiChat {
         // The window exists by now, so the stored color scheme applies to the
         // first frame instead of flashing the default one.
         apply_theme(theme_mode(this.store.theme), window, cx);
+        if let Some(warning) = warning {
+            this.notice = Some(warning.into());
+        }
         this
     }
 
@@ -223,15 +261,20 @@ impl KiiChat {
             .current
             .as_deref()
             .and_then(|id| self.store.provider_for_session(id));
-        let models: Vec<PromptModel> = provider
-            .map(|provider| {
-                provider
-                    .models
-                    .iter()
-                    .map(|model| {
-                        PromptModel::new(model.clone(), model.clone()).provider(provider.name.clone())
-                    })
-                    .collect()
+        // Only the current model is handed to the composer: its own list cannot
+        // be scrolled with the wheel (the popup layer swallows the event), so
+        // selection happens in this app's searchable picker instead, and the
+        // composer slot just shows what is selected.
+        let models: Vec<PromptModel> = self
+            .current_session()
+            .and_then(|session| session.model.clone())
+            .filter(|model| {
+                provider.is_some_and(|provider| provider.models.contains(model))
+            })
+            .map(|model| {
+                vec![PromptModel::new(model.clone(), model.clone()).provider(
+                    provider.map(|provider| provider.name.clone()).unwrap_or_default(),
+                )]
             })
             .unwrap_or_default();
         let selected = self
@@ -512,6 +555,7 @@ impl KiiChat {
         let receiver = api::stream_chat(
             provider.base_url,
             provider.api_key,
+            provider.api,
             model,
             request,
             self.store.proxy.clone(),
@@ -710,22 +754,35 @@ impl KiiChat {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (id, name, base, key, models) = match provider {
+        let (id, name, base, key, models, api) = match provider {
             Some(provider) => (
                 Some(provider.id.clone()),
                 provider.name.clone(),
                 provider.base_url.clone(),
                 provider.api_key.clone(),
                 provider.models.clone(),
+                provider.api,
             ),
-            None => (None, String::new(), String::new(), String::new(), Vec::new()),
+            None => (
+                None,
+                String::new(),
+                String::new(),
+                String::new(),
+                Vec::new(),
+                ApiFormat::default(),
+            ),
         };
         self.editor = Editor {
             id,
             models,
+            fetched: Vec::new(),
+            picked: HashSet::new(),
+            api,
             status: SharedString::default(),
             fetching: false,
         };
+        self.models_search
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.name_input
             .update(cx, |input, cx| input.set_value(name, window, cx));
         self.base_input
@@ -736,6 +793,18 @@ impl KiiChat {
     }
 
     fn save_provider(&mut self, cx: &mut Context<Self>) {
+        // A fetched list means the user has been choosing: save that choice.
+        if !self.editor.fetched.is_empty() {
+            let mut picked: Vec<String> = self
+                .editor
+                .fetched
+                .iter()
+                .filter(|model| self.editor.picked.contains(*model))
+                .cloned()
+                .collect();
+            picked.sort();
+            self.editor.models = picked;
+        }
         let name = self.name_input.read(cx).value().trim().to_string();
         let base_url = self.base_input.read(cx).value().trim().to_string();
         let api_key = self.key_input.read(cx).value().trim().to_string();
@@ -756,6 +825,7 @@ impl KiiChat {
                     provider.name = name;
                     provider.base_url = base_url;
                     provider.api_key = api_key;
+                    provider.api = self.editor.api;
                     provider.models = self.editor.models.clone();
                 }
                 id
@@ -763,6 +833,7 @@ impl KiiChat {
             None => {
                 let mut provider = Provider::new(name, base_url);
                 provider.api_key = api_key;
+                provider.api = self.editor.api;
                 provider.models = self.editor.models.clone();
                 let id = provider.id.clone();
                 self.store.providers.push(provider);
@@ -812,6 +883,7 @@ impl KiiChat {
         }
         let base_url = self.base_input.read(cx).value().trim().to_string();
         let api_key = self.key_input.read(cx).value().trim().to_string();
+        let api = self.editor.api;
         if base_url.is_empty() {
             self.editor.status = "先填写 Base URL。".into();
             cx.notify();
@@ -821,7 +893,8 @@ impl KiiChat {
         self.editor.status = "正在获取模型列表…".into();
         cx.notify();
 
-        let receiver = api::fetch_models(base_url, api_key, self.store.proxy.clone());
+        let receiver =
+            api::fetch_models(base_url, api_key, api, self.store.proxy.clone());
         cx.spawn(async move |this, cx| {
             let result = receiver
                 .recv()
@@ -836,18 +909,65 @@ impl KiiChat {
         self.editor.fetching = false;
         match result {
             Ok(models) => {
-                self.editor.status = format!("获取到 {} 个模型，保存后生效。", models.len()).into();
-                self.editor.models = models;
-                if let Some(id) = self.editor.id.clone() {
-                    if let Some(provider) = self.store.provider_mut(&id) {
-                        provider.models = self.editor.models.clone();
-                    }
-                    self.persist(cx);
-                    self.sync_prompt(cx);
-                }
+                // Nothing is saved here: the fetched list is a menu to pick
+                // from, and only 保存 writes the choice into the provider.
+                self.editor.picked = models
+                    .iter()
+                    .filter(|model| self.editor.models.contains(model))
+                    .cloned()
+                    .collect();
+                self.editor.status = format!(
+                    "获取到 {} 个模型，已勾选 {} 个，确认后点「保存」。",
+                    models.len(),
+                    self.editor.picked.len()
+                )
+                .into();
+                self.editor.fetched = models;
             }
             Err(error) => self.editor.status = format!("获取失败: {error}").into(),
         }
+        cx.notify();
+    }
+
+    /// The fetched models matching the settings search box.
+    fn fetched_matching(&self, cx: &App) -> Vec<String> {
+        let query = self.models_search.read(cx).value().trim().to_lowercase();
+        self.editor
+            .fetched
+            .iter()
+            .filter(|model| query.is_empty() || model.to_lowercase().contains(&query))
+            .cloned()
+            .collect()
+    }
+
+    /// The models the composer's picker offers, matching its search box.
+    fn picker_matching(&self, cx: &App) -> Vec<String> {
+        let query = self.picker_search.read(cx).value().trim().to_lowercase();
+        let Some(provider) = self
+            .current
+            .as_deref()
+            .and_then(|id| self.store.provider_for_session(id))
+        else {
+            return Vec::new();
+        };
+        provider
+            .models
+            .iter()
+            .filter(|model| query.is_empty() || model.to_lowercase().contains(&query))
+            .cloned()
+            .collect()
+    }
+
+    fn pick_model(&mut self, model: &str, cx: &mut Context<Self>) {
+        let Some(id) = self.current.clone() else {
+            return;
+        };
+        if let Some(session) = self.store.session_mut(&id) {
+            session.model = Some(model.to_string());
+        }
+        self.picker_open = false;
+        self.persist(cx);
+        self.sync_prompt(cx);
         cx.notify();
     }
 
@@ -1053,8 +1173,128 @@ impl KiiChat {
         };
 
         pane.child(div().flex_1().min_h_0().child(body))
+            .child(self.render_model_bar(cx))
             .child(div().flex_none().child(self.prompt.clone()))
             .into_any_element()
+    }
+
+    /// The model row above the composer, and its picker when open.
+    ///
+    /// The composer's own model menu cannot be scrolled with the wheel (the
+    /// popup layer swallows the event), so selection lives here: an inline
+    /// panel with a search box and a list that filters as you type.
+    fn render_model_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let current = self
+            .current_session()
+            .and_then(|session| session.model.clone())
+            .unwrap_or_else(|| "未选择模型".into());
+        let provider = self
+            .current
+            .as_deref()
+            .and_then(|id| self.store.provider_for_session(id))
+            .map(|provider| provider.name.clone());
+
+        let mut bar = h_flex()
+            .flex_none()
+            .justify_between()
+            .gap_2()
+            .px_1()
+            .child(
+                Button::new("open-picker")
+                    .label(current.clone())
+                    .icon(IconName::ChevronsUpDown)
+                    .ghost()
+                    .small()
+                    .tooltip("选择模型")
+                    .accessibility_label("选择模型")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.picker_open = !this.picker_open;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(provider.unwrap_or_default()),
+            );
+
+        if !self.picker_open {
+            return bar.into_any_element();
+        }
+
+        let matching = self.picker_matching(cx);
+        let rows: Vec<AnyElement> = matching
+            .iter()
+            .enumerate()
+            .map(|(ix, model)| {
+                let is_current = current == *model;
+                let select = cx.listener({
+                    let model = model.clone();
+                    move |this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
+                        this.pick_model(&model, cx);
+                    }
+                });
+                h_flex()
+                    .id(("pick-model", ix))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("模型：{model}"))
+                    .px_2()
+                    .py_1()
+                    .rounded(theme.radius)
+                    .text_sm()
+                    .cursor_pointer()
+                    .when(is_current, |this| {
+                        this.bg(theme.accent).text_color(theme.accent_foreground)
+                    })
+                    .on_click(select)
+                    .child(model.clone())
+                    .into_any_element()
+            })
+            .collect();
+
+        let empty = rows.is_empty();
+        bar = bar.child(
+            v_flex()
+                .id("model-picker-panel")
+                .gap_2()
+                .p_2()
+                .mb_2()
+                .rounded(theme.radius_lg)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .child(Input::new(&self.picker_search))
+                .child(
+                    div()
+                        .id("model-picker-list")
+                        .max_h(px(220.))
+                        .overflow_y_scrollbar()
+                        .child(if empty {
+                            v_flex()
+                                .p_2()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(if self.store.providers.is_empty() {
+                                    "还没有供应商，先去「设置 → 模型」添加。"
+                                } else if self
+                                    .current
+                                    .as_deref()
+                                    .and_then(|id| self.store.provider_for_session(id))
+                                    .is_some_and(|provider| provider.models.is_empty())
+                                {
+                                    "这个供应商还没有模型，先去「设置 → 模型」获取。"
+                                } else {
+                                    "没有匹配的模型。"
+                                })
+                                .into_any_element()
+                        } else {
+                            v_flex().gap(px(2.)).children(rows).into_any_element()
+                        }),
+                ),
+        );
+        bar.into_any_element()
     }
 
     /// The window's own title bar: the title, the sidebar toggle, then the
@@ -1593,6 +1833,108 @@ impl KiiChat {
                     })
                     .collect();
 
+                // The fetched models, as a list to pick from.
+                let mut selection: Option<AnyElement> = None;
+                if !self.editor.fetched.is_empty() {
+                    let matching = self.fetched_matching(cx);
+                    let query = self.models_search.read(cx).value().trim().to_lowercase();
+                    let rows: Vec<AnyElement> = matching
+                        .iter()
+                        .enumerate()
+                        .map(|(ix, model)| {
+                            let picked = self.editor.picked.contains(model);
+                            let toggle = cx.listener({
+                                let model = model.clone();
+                                move |this: &mut Self, checked: &bool, _, cx: &mut Context<Self>| {
+                                    if *checked {
+                                        this.editor.picked.insert(model.clone());
+                                    } else {
+                                        this.editor.picked.remove(&model);
+                                    }
+                                    this.editor.status = format!(
+                                        "已勾选 {} / {} 个模型，点「保存」生效。",
+                                        this.editor.picked.len(),
+                                        this.editor.fetched.len()
+                                    )
+                                    .into();
+                                    cx.notify();
+                                }
+                            });
+                            h_flex()
+                                .id(("model-pick", ix))
+                                .gap_2()
+                                .px_2()
+                                .py_1()
+                                .rounded(radius)
+                                .when(picked, |this| this.bg(theme.accent))
+                                .child(
+                                    Checkbox::new(("model-check", ix))
+                                        .checked(picked)
+                                        .label(model.clone())
+                                        .on_click(toggle),
+                                )
+                                .into_any_element()
+                        })
+                        .collect();
+
+                    let select_all = cx.listener({
+                        let matching = matching.clone();
+                        move |this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
+                            for model in &matching {
+                                this.editor.picked.insert(model.clone());
+                            }
+                            this.editor.status =
+                                format!("已勾选 {} 个模型，点「保存」生效。", this.editor.picked.len())
+                                    .into();
+                            cx.notify();
+                        }
+                    });
+                    let clear_all = cx.listener(|this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
+                        this.editor.picked.clear();
+                        this.editor.status = "已清空勾选。".into();
+                        cx.notify();
+                    });
+
+                    selection = Some(
+                        v_flex()
+                            .gap_2()
+                            .p_2()
+                            .rounded(radius)
+                            .border_1()
+                            .border_color(border)
+                            .bg(surface)
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().flex_1().min_w_0().child(Input::new(&self.models_search)))
+                                    .child(
+                                        Button::new("pick-all")
+                                            .label(if query.is_empty() {
+                                                "全选".to_string()
+                                            } else {
+                                                format!("全选 {} 项", matching.len())
+                                            })
+                                            .small()
+                                            .on_click(select_all),
+                                    )
+                                    .child(
+                                        Button::new("pick-none")
+                                            .label("清空")
+                                            .small()
+                                            .on_click(clear_all),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("fetched-models")
+                                    .max_h(px(240.))
+                                    .overflow_y_scrollbar()
+                                    .child(v_flex().gap(px(2.)).children(rows)),
+                            )
+                            .into_any_element(),
+                    );
+                }
+
                 let field = |label: &str, input: AnyElement| {
                     v_flex()
                         .gap_1()
@@ -1662,10 +2004,17 @@ impl KiiChat {
                                 "新增供应商"
                             }),
                     )
+                    .child(field("接口格式", format_row(&self.editor.api, cx)))
                     .child(field("名称", Input::new(&self.name_input).into_any_element()))
                     .child(field("Base URL", Input::new(&self.base_input).into_any_element()))
+                    .child(endpoint_hint(
+                        self.base_input.read(cx).value().as_ref(),
+                        self.editor.api,
+                        muted,
+                    ))
                     .child(field("API Key", Input::new(&self.key_input).into_any_element()))
-                    .child(actions);
+                    .child(actions)
+                    .when_some(selection, |this, selection| this.child(selection));
                 if !self.editor.status.is_empty() {
                     editor = editor.child(
                         div().text_xs().text_color(muted).child(self.editor.status.clone()),
@@ -1915,6 +2264,72 @@ fn control_button(
         .hover(move |style| style.bg(hover))
         .active(move |style| style.bg(active).text_color(ink))
         .child(Icon::new(icon).small())
+}
+
+/// The concrete URLs a Base URL resolves to, so a half-typed host is obvious.
+///
+/// Providers are usually entered as far as `/v1`; this shows what the app will
+/// actually call, after the same normalization the HTTP layer applies.
+fn endpoint_hint(base_url: &str, api: ApiFormat, muted: Hsla) -> AnyElement {
+    let base = api::normalize_base(base_url);
+    let completion = match api {
+        ApiFormat::OpenAiCompletions => "chat/completions",
+        ApiFormat::OpenAiResponses => "responses",
+        ApiFormat::AnthropicMessages => "messages",
+    };
+    let dialogue = format!("对话：{base}/{completion}");
+    let models = format!("模型列表：{base}/models");
+    v_flex()
+        .id("endpoint-hint")
+        .gap(px(2.))
+        .text_xs()
+        .text_color(muted)
+        .child(
+            div()
+                .id("endpoint-dialogue")
+                .role(gpui::Role::Label)
+                .aria_label(dialogue.clone())
+                .child(dialogue),
+        )
+        .child(
+            div()
+                .id("endpoint-models")
+                .role(gpui::Role::Label)
+                .aria_label(models.clone())
+                .child(models),
+        )
+        .into_any_element()
+}
+
+/// The three-format choice, with the selected format's shape spelled out.
+fn format_row(selected: &ApiFormat, cx: &mut Context<KiiChat>) -> AnyElement {
+    let theme = cx.theme();
+    let buttons = ApiFormat::ALL
+        .iter()
+        .map(|format| {
+            let format = *format;
+            Button::new(SharedString::from(format!("api-{}", format.label())))
+                .label(format.label())
+                .small()
+                .selected(selected == &format)
+                .tooltip(format.description())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.editor.api = format;
+                    cx.notify();
+                }))
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
+    v_flex()
+        .gap_1()
+        .child(h_flex().gap_2().children(buttons))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(selected.description()),
+        )
+        .into_any_element()
 }
 
 fn theme_mode(theme: Theme) -> ThemeMode {

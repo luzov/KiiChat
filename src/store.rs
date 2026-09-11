@@ -47,6 +47,46 @@ impl Msg {
     }
 }
 
+/// Which request/response shape a provider speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ApiFormat {
+    /// `POST /chat/completions` — OpenAI's original API, and what almost every
+    /// compatible vendor (DeepSeek, Moonshot, Ollama, vLLM, one-api) speaks.
+    #[default]
+    #[serde(rename = "openai-completions")]
+    OpenAiCompletions,
+    /// `POST /responses` — OpenAI's newer Responses API.
+    #[serde(rename = "openai-responses")]
+    OpenAiResponses,
+    /// `POST /messages` — Anthropic's Messages API (Claude).
+    #[serde(rename = "anthropic-messages")]
+    AnthropicMessages,
+}
+
+impl ApiFormat {
+    pub const ALL: [ApiFormat; 3] = [
+        ApiFormat::OpenAiCompletions,
+        ApiFormat::OpenAiResponses,
+        ApiFormat::AnthropicMessages,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ApiFormat::OpenAiCompletions => "OpenAI Chat Completions",
+            ApiFormat::OpenAiResponses => "OpenAI Responses",
+            ApiFormat::AnthropicMessages => "Anthropic Messages",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            ApiFormat::OpenAiCompletions => "POST /chat/completions，绝大多数兼容接口都用这个",
+            ApiFormat::OpenAiResponses => "POST /responses，OpenAI 新接口",
+            ApiFormat::AnthropicMessages => "POST /messages，Claude 接口（x-api-key）",
+        }
+    }
+}
+
 /// One OpenAI-compatible endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Provider {
@@ -59,6 +99,9 @@ pub struct Provider {
     /// Fetched from the provider's `/models` endpoint.
     #[serde(default)]
     pub models: Vec<String>,
+    /// Request/response shape; older configs default to Chat Completions.
+    #[serde(default)]
+    pub api: ApiFormat,
 }
 
 impl Provider {
@@ -69,6 +112,7 @@ impl Provider {
             base_url: base_url.into(),
             api_key: String::new(),
             models: Vec::new(),
+            api: ApiFormat::default(),
         }
     }
 }
@@ -171,14 +215,30 @@ impl Store {
             .join("config.json")
     }
 
-    pub fn load() -> Self {
+    /// Loads the store, reporting a config the app could not read.
+    ///
+    /// An unparseable file is moved aside rather than ignored: starting empty
+    /// and then saving would otherwise destroy every provider and session.
+    pub fn load() -> (Self, Option<String>) {
         let path = Self::path();
-        match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|err| {
-                eprintln!("KiiChat: {} is unreadable ({}), starting empty", path.display(), err);
-                Self::default()
-            }),
-            Err(_) => Self::default(),
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return (Self::default(), None);
+        };
+        match serde_json::from_str::<Self>(&text) {
+            Ok(store) => (store, None),
+            Err(err) => {
+                let backup = path.with_extension("json.invalid");
+                let kept = std::fs::rename(&path, &backup);
+                eprintln!("KiiChat: {} cannot be read ({err})", path.display());
+                let warning = match kept {
+                    Ok(()) => format!(
+                        "配置文件无法解析（{err}），已备份为 {} 并以空配置启动。",
+                        backup.display()
+                    ),
+                    Err(_) => format!("配置文件无法解析（{err}），已以空配置启动。"),
+                };
+                (Self::default(), Some(warning))
+            }
         }
     }
 
