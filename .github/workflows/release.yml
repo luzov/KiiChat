@@ -20,20 +20,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `cargo build --target <triple>` puts the binary under the triple,
+          # not directly in target/release — the directory is spelled out per
+          # entry because matrix values are not expression-interpolated.
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary: target/release/kiichat.exe
+            binary: target/x86_64-pc-windows-msvc/release/kiichat.exe
             package: kiichat-windows-x86_64.exe
           - name: macos-aarch64
             os: macos-latest
             target: aarch64-apple-darwin
-            binary: target/release/kiichat
+            binary: target/aarch64-apple-darwin/release/kiichat
             package: kiichat-macos-aarch64
           - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary: target/release/kiichat
+            binary: target/x86_64-unknown-linux-gnu/release/kiichat
             package: kiichat-linux-x86_64
     steps:
       - uses: actions/checkout@v7
@@ -55,7 +58,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libxkbcommon-dev libwayland-dev libx11-xcb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
             libxcb1-dev libxcb-randr0-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev libxcb-xkb-dev libxcb-keysyms1-dev \
             libxcb-icccm4-dev libxcb-image0-dev libxcb-util0-dev \
