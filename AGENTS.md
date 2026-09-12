@@ -41,12 +41,16 @@ Rules:
 ## Layout
 
 ```
-src/main.rs    application bootstrap, window options, Root wiring
-src/app.rs     the whole view: sidebar, transcript, composer, settings pages
-src/api.rs     OpenAI-compatible HTTP: /models, streaming /chat/completions, proxy modes
-src/icons.rs   asset source: the bundled icons plus the two glyphs they lack
-src/store.rs   providers, sessions, messages, theme, proxy; JSON persistence
-scripts/       dev tooling: fake provider server + UI Automation / capture helpers
+src/main.rs           application bootstrap, window options, Root wiring
+src/app/mod.rs        view state, wiring, Render, free UI helpers
+src/app/chat.rs       sidebar, transcript, model bar, title bar, message rows
+src/app/settings.rs   appearance / network / provider settings pages
+src/api.rs            OpenAI-compatible HTTP: /models, streaming chat, thinking deltas, proxy modes
+src/theme.rs          light/dark palette tokens and apply_theme
+src/icons.rs          asset source: the bundled icons plus the two glyphs they lack
+src/store.rs          providers, sessions, messages (incl. thinking), key encoding, theme, proxy
+DESIGN.md             product UI design system (palette, density, voice, anti-patterns)
+scripts/              dev tooling: fake provider server + UI Automation / capture helpers
 ```
 
 ## How the pieces fit
@@ -235,7 +239,7 @@ Hard rules for verification:
 - The Linux job installs GPUI's windowing dependencies; if upstream changes its
   feature set, that list is the first thing to revisit.
 
-## Open items (2026-09-11, end of session)
+## Open items (2026-09-12)
 
 Only what has been observed, with the evidence that showed it:
 
@@ -245,23 +249,32 @@ Only what has been observed, with the evidence that showed it:
    page (a scroll container) did not move either. Ask the user to roll a real
    wheel; if it does not scroll, look at the panel's parents, not the input
    path.
-2. **The picker panel renders at the right edge** of the composer row: its rows
-   report `x=2222..2470` while the transcript pane starts at `x=848`. It is a
-   child of the `justify_between` `h_flex` in `render_model_bar`.
-3. **Reasoning traces are dropped.** `api.rs` extracts only content deltas;
-   DeepSeek/GLM `reasoning_content` and Anthropic `thinking_delta` are ignored.
-4. **Anthropic `max_tokens` is hard-coded to 4096** (`api.rs`).
-5. **The top of the window is a resize band.** gpui_windows computes frame
+2. **The top of the window is a resize band.** gpui_windows computes frame
    thickness itself when the OS title bar is hidden, so clicks a few logical
    pixels below the top edge resize instead — measured when a stray click
    shrank the window to 314x50. Controls in a 34px title bar sit close to it.
-6. **Only Windows has been launched.** macOS and Linux compile in CI (green on
+3. **Only Windows has been launched.** macOS and Linux compile in CI (green on
    v0.1.0) but have never been run.
-7. **`src/app.rs` is ~2.3k lines**; splitting the view (sidebar, transcript,
-   settings, palette) is the cheapest quality win available.
-8. **API keys sit in plain text** in the config file.
-9. **`publish` was exercised once**, on the v0.1.0 tag: all four jobs green and
+4. **API keys are XOR-obfuscated at rest**, not OS-keychain encrypted. Threat
+   model is "don't paste config.json in chat", not multi-user isolation.
+5. **`publish` was exercised once**, on the v0.1.0 tag: all four jobs green and
    three binaries attached. Nothing else about tagging has been tested.
+6. **Reasoning strip is unverified against a live reasoning model.** The wire
+   parsers and UI exist; DeepSeek-reasoner / Claude thinking have not been
+   driven end-to-end on this machine.
+
+### Closed this session (2026-09-12)
+
+- Picker panel is left-aligned under the model chip (340px, not a right-edge
+  sibling of the composer row).
+- Thinking/reasoning deltas stream into `Msg.thinking` and render as a
+  collapsible strip; open while streaming, collapsed after Done.
+- Provider-level `max_tokens` (default 4096) is editable in settings and sent
+  on Anthropic Messages; optional elsewhere.
+- API keys encode as `enc:v1:` + base64(XOR against `install.key`); plaintext
+  keys from older configs migrate on load.
+- `src/app.rs` split into `src/app/{mod,chat,settings}.rs` plus `src/theme.rs`.
+- Palette moved off the DeepSeek-website clone onto the DESIGN.md tool blues.
 
 ## Verification rules learned the hard way
 

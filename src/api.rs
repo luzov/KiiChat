@@ -17,6 +17,8 @@ use crate::store::{ApiFormat, Proxy, Role};
 pub enum StreamEvent {
     /// A content delta, in arrival order.
     Delta(String),
+    /// A reasoning / thinking delta, in arrival order.
+    Thinking(String),
     /// The stream ended normally.
     Done,
     /// The stream ended with a user-visible error.
@@ -108,6 +110,43 @@ fn delta_text(api: ApiFormat, value: &serde_json::Value) -> Option<String> {
         },
         ApiFormat::AnthropicMessages => match value.get("type").and_then(|kind| kind.as_str()) {
             Some("content_block_delta") => value.pointer("/delta/text").and_then(|text| text.as_str()),
+            _ => None,
+        },
+    }?;
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Reasoning / thinking text a stream delta carries, per API shape.
+///
+/// DeepSeek and GLM use `reasoning_content` on the Chat Completions delta;
+/// Anthropic streams `thinking` inside a `content_block_delta`.
+fn thinking_text(api: ApiFormat, value: &serde_json::Value) -> Option<String> {
+    let text = match api {
+        ApiFormat::OpenAiCompletions => value
+            .pointer("/choices/0/delta/reasoning_content")
+            .or_else(|| value.pointer("/choices/0/delta/reasoning"))
+            .and_then(|text| text.as_str()),
+        ApiFormat::OpenAiResponses => match value.get("type").and_then(|kind| kind.as_str()) {
+            Some("response.reasoning_summary_text.delta")
+            | Some("response.reasoning_text.delta") => {
+                value.get("delta").and_then(|text| text.as_str())
+            }
+            _ => None,
+        },
+        ApiFormat::AnthropicMessages => match value.get("type").and_then(|kind| kind.as_str()) {
+            Some("content_block_delta") => {
+                let is_thinking = value
+                    .pointer("/delta/type")
+                    .and_then(|kind| kind.as_str())
+                    == Some("thinking_delta");
+                is_thinking
+                    .then(|| {
+                        value
+                            .pointer("/delta/thinking")
+                            .and_then(|text| text.as_str())
+                    })
+                    .flatten()
+            }
             _ => None,
         },
     }?;
@@ -257,12 +296,14 @@ pub fn fetch_models(
 }
 
 /// Starts a streaming chat completion. Set `cancel` to stop early.
+#[allow(clippy::too_many_arguments)]
 pub fn stream_chat(
     base_url: String,
     api_key: String,
     api: ApiFormat,
     model: String,
     messages: Vec<(Role, String)>,
+    max_tokens: u32,
     proxy: Proxy,
     cancel: Arc<AtomicBool>,
 ) -> async_channel::Receiver<StreamEvent> {
@@ -320,7 +361,7 @@ pub fn stream_chat(
                         "stream": true,
                         // The Messages API has no `system` role in `messages`
                         // and requires a token budget.
-                        "max_tokens": 4096,
+                        "max_tokens": max_tokens,
                         "system": system_prompt(&messages),
                         "messages": anthropic_messages(&messages),
                     }),
@@ -393,6 +434,9 @@ pub fn stream_chat(
                         }
                         if let Some(content) = delta_text(api, &value) {
                             send(StreamEvent::Delta(content)).await;
+                        }
+                        if let Some(thinking) = thinking_text(api, &value) {
+                            send(StreamEvent::Thinking(thinking)).await;
                         }
                         if is_final_event(api, &value) {
                             send(StreamEvent::Done).await;

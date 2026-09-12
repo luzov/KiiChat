@@ -31,6 +31,9 @@ pub struct Msg {
     pub id: String,
     pub role: Role,
     pub content: String,
+    /// Model reasoning / thinking trace, when the API emits one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
     /// Set when the response failed; rendered as the message's failure state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -42,6 +45,7 @@ impl Msg {
             id: uuid::Uuid::new_v4().to_string(),
             role,
             content: content.into(),
+            thinking: None,
             error: None,
         }
     }
@@ -102,6 +106,13 @@ pub struct Provider {
     /// Request/response shape; older configs default to Chat Completions.
     #[serde(default)]
     pub api: ApiFormat,
+    /// Completion budget. Required by Anthropic Messages; optional elsewhere.
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+}
+
+fn default_max_tokens() -> u32 {
+    4096
 }
 
 impl Provider {
@@ -113,8 +124,156 @@ impl Provider {
             api_key: String::new(),
             models: Vec::new(),
             api: ApiFormat::default(),
+            max_tokens: default_max_tokens(),
         }
     }
+
+    /// The key as the HTTP layer should send it: stored form is encrypted.
+    pub fn api_key_plain(&self) -> String {
+        decode_api_key(&self.api_key)
+    }
+
+    pub fn set_api_key_plain(&mut self, key: impl Into<String>) {
+        self.api_key = encode_api_key(&key.into());
+    }
+}
+
+/// At-rest encoding for API keys.
+///
+/// Threat model: a casually shared or backed-up `config.json` should not
+/// contain readable keys. This is XOR against a per-install key file — not
+/// multi-user OS isolation. The install key sits beside the config.
+const API_KEY_PREFIX: &str = "enc:v1:";
+
+fn config_dir() -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|dirs| dirs.config_dir().join("KiiChat"))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn install_key_path() -> PathBuf {
+    config_dir().join("install.key")
+}
+
+fn load_or_create_install_key() -> [u8; 32] {
+    let path = install_key_path();
+    if let Ok(bytes) = std::fs::read(&path)
+        && bytes.len() == 32
+    {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        return key;
+    }
+    let mut key = [0u8; 32];
+    // uuid v4 carries 16 random bytes; two of them fill the key. Good enough
+    // for file obfuscation without pulling a CSPRNG crate.
+    let a = uuid::Uuid::new_v4();
+    let b = uuid::Uuid::new_v4();
+    key[..16].copy_from_slice(a.as_bytes());
+    key[16..].copy_from_slice(b.as_bytes());
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, key);
+    key
+}
+
+fn xor_bytes(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
+    data.iter()
+        .enumerate()
+        .map(|(i, byte)| byte ^ key[i % key.len()])
+        .collect()
+}
+
+fn encode_api_key(plain: &str) -> String {
+    if plain.is_empty() {
+        return String::new();
+    }
+    encode_api_key_with(plain, &load_or_create_install_key())
+}
+
+fn decode_api_key(stored: &str) -> String {
+    decode_api_key_with(stored, &load_or_create_install_key())
+}
+
+fn encode_api_key_with(plain: &str, key: &[u8; 32]) -> String {
+    let mixed = xor_bytes(plain.as_bytes(), key);
+    format!("{API_KEY_PREFIX}{}", base64_encode(&mixed))
+}
+
+fn decode_api_key_with(stored: &str, key: &[u8; 32]) -> String {
+    let Some(rest) = stored.strip_prefix(API_KEY_PREFIX) else {
+        // Plaintext from an older config; migrate on the next save.
+        return stored.to_string();
+    };
+    let Ok(mixed) = base64_decode(rest) else {
+        return String::new();
+    };
+    String::from_utf8(xor_bytes(&mixed, key)).unwrap_or_default()
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(n >> 6) as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[n as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn base64_decode(text: &str) -> Result<Vec<u8>, ()> {
+    fn val(c: u8) -> Result<u8, ()> {
+        match c {
+            b'A'..=b'Z' => Ok(c - b'A'),
+            b'a'..=b'z' => Ok(c - b'a' + 26),
+            b'0'..=b'9' => Ok(c - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err(()),
+        }
+    }
+    let bytes = text.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return Err(());
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let mut n = [0u8; 4];
+        let mut pad = 0;
+        for (i, byte) in chunk.iter().enumerate() {
+            if *byte == b'=' {
+                pad += 1;
+                n[i] = 0;
+            } else {
+                n[i] = val(*byte)?;
+            }
+        }
+        let word = ((n[0] as u32) << 18) | ((n[1] as u32) << 12) | ((n[2] as u32) << 6) | n[3] as u32;
+        out.push((word >> 16) as u8);
+        if pad < 2 {
+            out.push((word >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(word as u8);
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,7 +384,10 @@ impl Store {
             return (Self::default(), None);
         };
         match serde_json::from_str::<Self>(&text) {
-            Ok(store) => (store, None),
+            Ok(mut store) => {
+                store.migrate_api_keys();
+                (store, None)
+            }
             Err(err) => {
                 let backup = path.with_extension("json.invalid");
                 let kept = std::fs::rename(&path, &backup);
@@ -239,6 +401,17 @@ impl Store {
                 };
                 (Self::default(), Some(warning))
             }
+        }
+    }
+
+    /// Rewrites plaintext keys into the encoded form; next `save` persists them.
+    fn migrate_api_keys(&mut self) {
+        for provider in &mut self.providers {
+            if provider.api_key.is_empty() || provider.api_key.starts_with(API_KEY_PREFIX) {
+                continue;
+            }
+            let plain = provider.api_key.clone();
+            provider.set_api_key_plain(plain);
         }
     }
 
@@ -342,5 +515,39 @@ mod tests {
             serde_json::to_string(&ApiFormat::AnthropicMessages).unwrap(),
             "\"anthropic-messages\""
         );
+    }
+
+    #[test]
+    fn api_key_round_trips_through_encoding() {
+        let key = [7u8; 32];
+        let plain = "sk-test-中文-and-ascii";
+        let encoded = encode_api_key_with(plain, &key);
+        assert!(encoded.starts_with(API_KEY_PREFIX));
+        assert!(!encoded.contains(plain));
+        assert_eq!(decode_api_key_with(&encoded, &key), plain);
+    }
+
+    #[test]
+    fn plaintext_api_key_still_reads() {
+        assert_eq!(decode_api_key_with("sk-legacy", &[1u8; 32]), "sk-legacy");
+    }
+
+    #[test]
+    fn provider_defaults_max_tokens() {
+        let text = r#"{
+            "id": "p", "name": "Mock", "base_url": "http://127.0.0.1:18080/v1",
+            "api_key": "k", "models": ["mock-mini"]
+        }"#;
+        let provider: Provider = serde_json::from_str(text).expect("parse");
+        assert_eq!(provider.max_tokens, 4096);
+    }
+
+    #[test]
+    fn thinking_field_is_optional() {
+        let text = r#"{
+            "id": "m", "role": "assistant", "content": "hi"
+        }"#;
+        let msg: Msg = serde_json::from_str(text).expect("parse");
+        assert!(msg.thinking.is_none());
     }
 }

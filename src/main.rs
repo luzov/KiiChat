@@ -9,6 +9,7 @@ mod api;
 mod app;
 mod icons;
 mod store;
+mod theme;
 
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
 
