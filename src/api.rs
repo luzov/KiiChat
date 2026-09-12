@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::store::{ApiFormat, Proxy, Role};
+use crate::store::{ApiFormat, ModelInfo, Proxy, Role};
 
 /// Events emitted while a chat completion streams.
 #[derive(Debug, Clone)]
@@ -247,15 +247,17 @@ fn authorize(
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// Fetches the provider's model list from `{base_url}/models`.
+/// Fetches the provider's model catalog from `{base_url}/models`.
 ///
-/// The receiver yields exactly one result and then closes.
+/// Picks up context / completion limits when the vendor reports them
+/// (OpenRouter-style `context_length`, Anthropic `max_output_tokens`, nested
+/// `top_provider.*`, and a few common aliases).
 pub fn fetch_models(
     base_url: String,
     api_key: String,
     api: ApiFormat,
     proxy: Proxy,
-) -> async_channel::Receiver<Result<Vec<String>, String>> {
+) -> async_channel::Receiver<Result<Vec<ModelInfo>, String>> {
     spawn_runtime(async move {
         let client = client(&proxy, Some(Duration::from_secs(30)))?;
         let url = format!("{}/models", normalize_base(&base_url));
@@ -280,19 +282,38 @@ pub fn fetch_models(
                 let id = item
                     .as_str()
                     .or_else(|| item.get("id").and_then(|id| id.as_str()));
-                if let Some(id) = id {
-                    models.push(id.to_string());
-                }
+                let Some(id) = id else { continue };
+                models.push(ModelInfo::with_limits(
+                    id,
+                    first_u32(item, &["max_tokens", "max_output_tokens", "max_completion_tokens"])
+                        .or_else(|| {
+                            item.pointer("/top_provider/max_completion_tokens")
+                                .and_then(|v| v.as_u64())
+                                .map(|v| v as u32)
+                        }),
+                    first_u32(item, &["context_length", "context_window"])
+                        .or_else(|| {
+                            item.pointer("/top_provider/context_length")
+                                .and_then(|v| v.as_u64())
+                                .map(|v| v as u32)
+                        }),
+                ));
             }
         }
-        models.sort();
-        models.dedup();
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        models.dedup_by(|a, b| a.id == b.id);
         if models.is_empty() {
             Err(format!("接口没有返回模型: {}", truncate(&body, 200)))
         } else {
             Ok(models)
         }
     })
+}
+
+fn first_u32(value: &serde_json::Value, keys: &[&str]) -> Option<u32> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|v| v.as_u64()))
+        .map(|v| v as u32)
 }
 
 /// Starts a streaming chat completion. Set `cancel` to stop early.

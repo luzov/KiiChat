@@ -185,107 +185,126 @@ impl KiiChat {
                     })
                     .collect();
 
-                // The fetched models, as a list to pick from.
-                let mut selection: Option<AnyElement> = None;
-                if !self.editor.fetched.is_empty() {
+                // Right-side catalog drawer (Cherry Studio-style): +/− per row,
+                // closing the panel saves the kept set.
+                let drawer: Option<AnyElement> = if self.editor.drawer_open {
                     let matching = self.fetched_matching(cx);
-                    let query = self.models_search.read(cx).value().trim().to_lowercase();
                     let rows: Vec<AnyElement> = matching
                         .iter()
                         .enumerate()
                         .map(|(ix, model)| {
-                            let picked = self.editor.picked.contains(model);
+                            let keep = self.editor.picked.contains(&model.id);
+                            let id = model.id.clone();
                             let toggle = cx.listener({
-                                let model = model.clone();
-                                move |this: &mut Self, checked: &bool, _, cx: &mut Context<Self>| {
-                                    if *checked {
-                                        this.editor.picked.insert(model.clone());
-                                    } else {
-                                        this.editor.picked.remove(&model);
-                                    }
-                                    this.editor.status = format!(
-                                        "已勾选 {} / {} 个模型，点「保存」生效。",
-                                        this.editor.picked.len(),
-                                        this.editor.fetched.len()
-                                    )
-                                    .into();
-                                    cx.notify();
+                                let id = id.clone();
+                                move |this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
+                                    let keep = !this.editor.picked.contains(&id);
+                                    this.toggle_model_pick(&id, keep, cx);
                                 }
                             });
+                            let mut meta = Vec::new();
+                            if let Some(ctx) = model.context_window {
+                                meta.push(format!("上下文 {ctx}"));
+                            }
+                            if let Some(max) = model.max_tokens {
+                                meta.push(format!("输出上限 {max}"));
+                            }
+                            let meta = if meta.is_empty() {
+                                "—".to_string()
+                            } else {
+                                meta.join(" · ")
+                            };
                             h_flex()
-                                .id(("model-pick", ix))
+                                .id(("catalog-model", ix))
                                 .gap_2()
                                 .px_2()
                                 .py_1()
                                 .rounded(radius)
-                                .when(picked, |this| this.bg(theme.accent))
+                                .when(keep, |this| this.bg(theme.accent))
                                 .child(
-                                    Checkbox::new(("model-check", ix))
-                                        .checked(picked)
-                                        .label(model.clone())
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(id.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(if keep {
+                                            theme.accent_foreground
+                                        } else {
+                                            muted
+                                        })
+                                        .child(meta),
+                                )
+                                .child(
+                                    Button::new(("toggle-model", ix))
+                                        .icon(if keep { IconName::Minus } else { IconName::Plus })
+                                        .ghost()
+                                        .small()
+                                        .tooltip(if keep { "从供应商移除" } else { "加入供应商" })
+                                        .accessibility_label(if keep {
+                                            format!("移除模型 {id}")
+                                        } else {
+                                            format!("添加模型 {id}")
+                                        })
                                         .on_click(toggle),
                                 )
                                 .into_any_element()
                         })
                         .collect();
 
-                    let select_all = cx.listener({
-                        let matching = matching.clone();
-                        move |this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
-                            for model in &matching {
-                                this.editor.picked.insert(model.clone());
-                            }
-                            this.editor.status =
-                                format!("已勾选 {} 个模型，点「保存」生效。", this.editor.picked.len())
-                                    .into();
-                            cx.notify();
-                        }
+                    let close = cx.listener(|this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
+                        this.close_models_drawer(cx);
                     });
-                    let clear_all = cx.listener(|this: &mut Self, _: &ClickEvent, _, cx: &mut Context<Self>| {
-                        this.editor.picked.clear();
-                        this.editor.status = "已清空勾选。".into();
-                        cx.notify();
-                    });
-
-                    selection = Some(
+                    Some(
                         v_flex()
+                            .id("models-drawer")
+                            .w(px(320.))
+                            .flex_none()
+                            .max_h(px(560.))
                             .gap_2()
-                            .p_2()
-                            .rounded(radius)
+                            .p_3()
+                            .rounded(radius_lg)
                             .border_1()
                             .border_color(border)
-                            .bg(surface)
+                            .bg(theme.popover)
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .child(div().flex_1().min_w_0().child(Input::new(&self.models_search)))
+                                    .items_center()
                                     .child(
-                                        Button::new("pick-all")
-                                            .label(if query.is_empty() {
-                                                "全选".to_string()
-                                            } else {
-                                                format!("全选 {} 项", matching.len())
-                                            })
-                                            .small()
-                                            .on_click(select_all),
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .child("选择模型"),
                                     )
                                     .child(
-                                        Button::new("pick-none")
-                                            .label("清空")
+                                        Button::new("close-drawer")
+                                            .label("完成并保存")
+                                            .primary()
                                             .small()
-                                            .on_click(clear_all),
+                                            .on_click(close),
                                     ),
                             )
+                            .child(Input::new(&self.models_search))
                             .child(
                                 div()
                                     .id("fetched-models")
-                                    .max_h(px(240.))
+                                    .max_h(px(400.))
                                     .overflow_y_scrollbar()
                                     .child(v_flex().gap(px(2.)).children(rows)),
                             )
                             .into_any_element(),
-                    );
-                }
+                    )
+                } else {
+                    None
+                };
 
                 let field = |label: &str, input: AnyElement| {
                     v_flex()
@@ -366,17 +385,16 @@ impl KiiChat {
                     ))
                     .child(field("API Key", Input::new(&self.key_input).into_any_element()))
                     .child(field(
-                        "最大输出 tokens",
+                        "默认输出上限（模型未单独设置时）",
                         Input::new(&self.max_tokens_input).into_any_element(),
                     ))
                     .child(
                         div()
                             .text_xs()
                             .text_color(muted)
-                            .child("Anthropic Messages 必填；其它接口可选。默认 4096。"),
+                            .child("Anthropic Messages 必填。各模型的独立上限在「获取模型」面板里显示；默认 8192。"),
                     )
-                    .child(actions)
-                    .when_some(selection, |this, selection| this.child(selection));
+                    .child(actions);
                 if !self.editor.status.is_empty() {
                     editor = editor.child(
                         div().text_xs().text_color(muted).child(self.editor.status.clone()),
@@ -409,6 +427,7 @@ impl KiiChat {
                             .children(rows),
                     )
                     .child(editor)
+                    .when_some(drawer, |this, drawer| this.child(drawer))
                     .into_any_element()
             }
         };

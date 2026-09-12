@@ -91,6 +91,106 @@ impl ApiFormat {
     }
 }
 
+/// One model the provider exposes, plus optional limits from `/models`.
+///
+/// Older configs stored a bare id string; both shapes deserialize.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModelInfo {
+    pub id: String,
+    /// Completion budget for this model when the catalog reports one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Context window in tokens when the catalog reports one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+}
+
+impl ModelInfo {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            max_tokens: None,
+            context_window: None,
+        }
+    }
+
+    pub fn with_limits(
+        id: impl Into<String>,
+        max_tokens: Option<u32>,
+        context_window: Option<u32>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            max_tokens,
+            context_window,
+        }
+    }
+}
+
+impl From<&str> for ModelInfo {
+    fn from(id: &str) -> Self {
+        Self::new(id)
+    }
+}
+
+impl From<String> for ModelInfo {
+    fn from(id: String) -> Self {
+        Self::new(id)
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        struct ModelVisitor;
+
+        impl<'de> Visitor<'de> for ModelVisitor {
+            type Value = ModelInfo;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a model id string or an object with an id field")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(ModelInfo::new(value))
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut id = None;
+                let mut max_tokens = None;
+                let mut context_window = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "id" => id = Some(map.next_value::<String>()?),
+                        "max_tokens" | "max_output_tokens" | "max_completion_tokens" => {
+                            max_tokens = map.next_value::<Option<u32>>()?;
+                        }
+                        "context_window" | "context_length" => {
+                            context_window = map.next_value::<Option<u32>>()?;
+                        }
+                        _ => {
+                            let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                let id = id.ok_or_else(|| de::Error::missing_field("id"))?;
+                Ok(ModelInfo {
+                    id,
+                    max_tokens,
+                    context_window,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(ModelVisitor)
+    }
+}
+
 /// One OpenAI-compatible endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Provider {
@@ -100,19 +200,19 @@ pub struct Provider {
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
-    /// Fetched from the provider's `/models` endpoint.
+    /// Models the user kept for this provider.
     #[serde(default)]
-    pub models: Vec<String>,
+    pub models: Vec<ModelInfo>,
     /// Request/response shape; older configs default to Chat Completions.
     #[serde(default)]
     pub api: ApiFormat,
-    /// Completion budget. Required by Anthropic Messages; optional elsewhere.
+    /// Fallback completion budget when a model does not report one.
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
 }
 
 fn default_max_tokens() -> u32 {
-    4096
+    8192
 }
 
 impl Provider {
@@ -135,6 +235,18 @@ impl Provider {
 
     pub fn set_api_key_plain(&mut self, key: impl Into<String>) {
         self.api_key = encode_api_key(&key.into());
+    }
+
+    pub fn has_model(&self, id: &str) -> bool {
+        self.models.iter().any(|model| model.id == id)
+    }
+
+    /// Budget for a chat turn: the model's own limit, else the provider fallback.
+    pub fn max_tokens_for(&self, model_id: Option<&str>) -> u32 {
+        model_id
+            .and_then(|id| self.models.iter().find(|model| model.id == id))
+            .and_then(|model| model.max_tokens)
+            .unwrap_or(self.max_tokens)
     }
 }
 
@@ -464,7 +576,7 @@ mod tests {
     fn provider(api: ApiFormat) -> Provider {
         let mut provider = Provider::new("Mock", "http://127.0.0.1:18080/v1");
         provider.api = api;
-        provider.models = vec!["mock-mini".into()];
+        provider.models = vec![ModelInfo::new("mock-mini")];
         provider
     }
 
@@ -539,7 +651,7 @@ mod tests {
             "api_key": "k", "models": ["mock-mini"]
         }"#;
         let provider: Provider = serde_json::from_str(text).expect("parse");
-        assert_eq!(provider.max_tokens, 4096);
+        assert_eq!(provider.max_tokens, 8192);
     }
 
     #[test]
@@ -549,5 +661,24 @@ mod tests {
         }"#;
         let msg: Msg = serde_json::from_str(text).expect("parse");
         assert!(msg.thinking.is_none());
+    }
+
+    #[test]
+    fn model_list_accepts_plain_ids_and_objects() {
+        let text = r#"{
+            "id": "p", "name": "Mock", "base_url": "http://127.0.0.1:18080/v1",
+            "api_key": "k",
+            "models": [
+                "legacy-id",
+                { "id": "rich", "max_tokens": 4096, "context_window": 128000 }
+            ]
+        }"#;
+        let provider: Provider = serde_json::from_str(text).expect("parse");
+        assert_eq!(provider.models[0].id, "legacy-id");
+        assert_eq!(provider.models[0].max_tokens, None);
+        assert_eq!(provider.models[1].max_tokens, Some(4096));
+        assert_eq!(provider.models[1].context_window, Some(128000));
+        assert_eq!(provider.max_tokens_for(Some("rich")), 4096);
+        assert_eq!(provider.max_tokens_for(Some("legacy-id")), 8192);
     }
 }

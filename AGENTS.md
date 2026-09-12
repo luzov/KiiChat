@@ -48,7 +48,7 @@ src/app/settings.rs   appearance / network / provider settings pages
 src/api.rs            OpenAI-compatible HTTP: /models, streaming chat, thinking deltas, proxy modes
 src/theme.rs          light/dark palette tokens and apply_theme
 src/icons.rs          asset source: the bundled icons plus the two glyphs they lack
-src/store.rs          providers, sessions, messages (incl. thinking), key encoding, theme, proxy
+src/store.rs          providers, sessions, messages (incl. thinking), ModelInfo, key encoding
 DESIGN.md             product UI design system (palette, density, voice, anti-patterns)
 scripts/              dev tooling: fake provider server + UI Automation / capture helpers
 ```
@@ -269,12 +269,14 @@ Only what has been observed, with the evidence that showed it:
   sibling of the composer row).
 - Thinking/reasoning deltas stream into `Msg.thinking` and render as a
   collapsible strip; open while streaming, collapsed after Done.
-- Provider-level `max_tokens` (default 4096) is editable in settings and sent
-  on Anthropic Messages; optional elsewhere.
 - API keys encode as `enc:v1:` + base64(XOR against `install.key`); plaintext
   keys from older configs migrate on load.
 - `src/app.rs` split into `src/app/{mod,chat,settings}.rs` plus `src/theme.rs`.
 - Palette moved off the DeepSeek-website clone onto the DESIGN.md tool blues.
+- Close-button idle ink matches min/max (was invisible against the title bar).
+- Model catalog is a right drawer with +/−; closing it saves. Models store
+  optional `max_tokens` / `context_window` from `/models`; chat uses the
+  model's limit when present, else the provider fallback (default 8192).
 
 ## Verification rules learned the hard way
 

@@ -25,7 +25,6 @@ use gpui_ai::prompt_bar::{PromptBar, PromptBarEvent, PromptModel};
 use gpui_ai::stream::{ProgressState, StreamedContent};
 use gpui_ai::streaming_text::StreamingText;
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::text::TextView;
@@ -37,7 +36,7 @@ use gpui_component::{
 
 use crate::api::{self, StreamEvent};
 use crate::icons;
-use crate::store::{ApiFormat, Msg, Provider, Proxy, Role, Session, Store, Theme};
+use crate::store::{ApiFormat, ModelInfo, Msg, Provider, Proxy, Role, Session, Store, Theme};
 use crate::theme::{apply_theme, theme_mode};
 
 const SIDEBAR_WIDTH: f32 = 232.;
@@ -102,15 +101,17 @@ struct Editor {
     /// `None` while composing a new provider.
     id: Option<String>,
     /// The models saved for this provider.
-    models: Vec<String>,
-    /// Everything the provider reported, while the user picks from it.
-    fetched: Vec<String>,
-    /// The models of `fetched` the user has ticked.
+    models: Vec<ModelInfo>,
+    /// Everything the provider reported, while the drawer is open.
+    fetched: Vec<ModelInfo>,
+    /// The models of `fetched` the user has kept (+).
     picked: HashSet<String>,
     /// Request/response shape this provider speaks.
     api: ApiFormat,
     status: SharedString,
     fetching: bool,
+    /// Right-side catalog drawer while choosing models.
+    drawer_open: bool,
 }
 
 pub struct KiiChat {
@@ -282,7 +283,7 @@ impl KiiChat {
             .current_session()
             .and_then(|session| session.model.clone())
             .filter(|model| {
-                provider.is_some_and(|provider| provider.models.contains(model))
+                provider.is_some_and(|provider| provider.has_model(model))
             })
             .map(|model| {
                 vec![PromptModel::new(model.clone(), model.clone()).provider(
@@ -365,7 +366,7 @@ impl KiiChat {
         let model = self
             .current_session()
             .and_then(|session| session.model.clone())
-            .or_else(|| provider.models.first().cloned());
+            .or_else(|| provider.models.first().map(|model| model.id.clone()));
         let Some(model) = model else {
             self.warn(
                 format!("供应商「{}」还没有模型列表，请到设置里获取模型。", provider.name),
@@ -565,13 +566,14 @@ impl KiiChat {
         self.sync_transcript(true);
         cx.notify();
 
+        let max_tokens = provider.max_tokens_for(Some(&model));
         let receiver = api::stream_chat(
             provider.base_url.clone(),
             provider.api_key_plain(),
             provider.api,
             model,
             request,
-            provider.max_tokens,
+            max_tokens,
             self.store.proxy.clone(),
             cancel,
         );
@@ -805,6 +807,7 @@ impl KiiChat {
             api,
             status: SharedString::default(),
             fetching: false,
+            drawer_open: false,
         };
         self.models_search
             .update(cx, |input, cx| input.set_value("", window, cx));
@@ -816,21 +819,22 @@ impl KiiChat {
             .update(cx, |input, cx| input.set_value(key, window, cx));
         self.max_tokens_input
             .update(cx, |input, cx| input.set_value(max_tokens, window, cx));
+        self.editor.drawer_open = false;
         cx.notify();
     }
 
     fn save_provider(&mut self, cx: &mut Context<Self>) {
-        // A fetched list means the user has been choosing: save that choice.
+        // Drawer choices are the source of truth while the catalog is open.
         if !self.editor.fetched.is_empty() {
-            let mut picked: Vec<String> = self
+            let mut models: Vec<ModelInfo> = self
                 .editor
                 .fetched
                 .iter()
-                .filter(|model| self.editor.picked.contains(*model))
+                .filter(|model| self.editor.picked.contains(&model.id))
                 .cloned()
                 .collect();
-            picked.sort();
-            self.editor.models = picked;
+            models.sort_by(|a, b| a.id.cmp(&b.id));
+            self.editor.models = models;
         }
         let name = self.name_input.read(cx).value().trim().to_string();
         let base_url = self.base_input.read(cx).value().trim().to_string();
@@ -841,7 +845,7 @@ impl KiiChat {
             .value()
             .trim()
             .parse::<u32>()
-            .unwrap_or(4096)
+            .unwrap_or(8192)
             .clamp(1, 2_000_000);
         if base_url.is_empty() {
             self.editor.status = "Base URL 不能为空。".into();
@@ -942,24 +946,38 @@ impl KiiChat {
         .detach();
     }
 
-    fn apply_models(&mut self, result: Result<Vec<String>, String>, cx: &mut Context<Self>) {
+    fn apply_models(&mut self, result: Result<Vec<ModelInfo>, String>, cx: &mut Context<Self>) {
         self.editor.fetching = false;
         match result {
             Ok(models) => {
-                // Nothing is saved here: the fetched list is a menu to pick
-                // from, and only 保存 writes the choice into the provider.
-                self.editor.picked = models
-                    .iter()
-                    .filter(|model| self.editor.models.contains(model))
-                    .cloned()
-                    .collect();
+                // Seed +/− from what the provider already has saved. Catalog
+                // limits win over older saved values when the id matches.
+                let mut picked: HashSet<String> = HashSet::new();
+                let mut merged: Vec<ModelInfo> = models;
+                for saved in &self.editor.models {
+                    if let Some(slot) = merged.iter_mut().find(|m| m.id == saved.id) {
+                        if slot.max_tokens.is_none() {
+                            slot.max_tokens = saved.max_tokens;
+                        }
+                        if slot.context_window.is_none() {
+                            slot.context_window = saved.context_window;
+                        }
+                        picked.insert(saved.id.clone());
+                    } else {
+                        picked.insert(saved.id.clone());
+                        merged.push(saved.clone());
+                    }
+                }
+                merged.sort_by(|a, b| a.id.cmp(&b.id));
+                self.editor.picked = picked;
+                self.editor.fetched = merged;
+                self.editor.drawer_open = true;
                 self.editor.status = format!(
-                    "获取到 {} 个模型，已勾选 {} 个，确认后点「保存」。",
-                    models.len(),
+                    "获取到 {} 个模型，已保留 {} 个。用 +/− 调整，关闭面板自动保存。",
+                    self.editor.fetched.len(),
                     self.editor.picked.len()
                 )
                 .into();
-                self.editor.fetched = models;
             }
             Err(error) => self.editor.status = format!("获取失败: {error}").into(),
         }
@@ -967,12 +985,12 @@ impl KiiChat {
     }
 
     /// The fetched models matching the settings search box.
-    fn fetched_matching(&self, cx: &App) -> Vec<String> {
+    fn fetched_matching(&self, cx: &App) -> Vec<ModelInfo> {
         let query = self.models_search.read(cx).value().trim().to_lowercase();
         self.editor
             .fetched
             .iter()
-            .filter(|model| query.is_empty() || model.to_lowercase().contains(&query))
+            .filter(|model| query.is_empty() || model.id.to_lowercase().contains(&query))
             .cloned()
             .collect()
     }
@@ -990,9 +1008,31 @@ impl KiiChat {
         provider
             .models
             .iter()
-            .filter(|model| query.is_empty() || model.to_lowercase().contains(&query))
-            .cloned()
+            .map(|model| model.id.clone())
+            .filter(|id| query.is_empty() || id.to_lowercase().contains(&query))
             .collect()
+    }
+
+    /// Adds or removes one catalog row in the settings drawer.
+    pub(super) fn toggle_model_pick(&mut self, id: &str, keep: bool, cx: &mut Context<Self>) {
+        if keep {
+            self.editor.picked.insert(id.to_string());
+        } else {
+            self.editor.picked.remove(id);
+        }
+        self.editor.status = format!(
+            "已保留 {} / {} 个模型，关闭面板自动保存。",
+            self.editor.picked.len(),
+            self.editor.fetched.len()
+        )
+        .into();
+        cx.notify();
+    }
+
+    /// Closes the catalog drawer and persists the kept models.
+    pub(super) fn close_models_drawer(&mut self, cx: &mut Context<Self>) {
+        self.editor.drawer_open = false;
+        self.save_provider(cx);
     }
 
     fn pick_model(&mut self, model: &str, cx: &mut Context<Self>) {

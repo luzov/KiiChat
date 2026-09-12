@@ -22,7 +22,7 @@
 
 ## 功能
 
-- **模型供应商**：填写 Base URL 与 API Key，选择接口格式（OpenAI Chat Completions / OpenAI Responses / Anthropic Messages），可配置最大输出 tokens（Anthropic 必填），点一次「获取模型」拉取模型列表，再勾选要保留的模型；竖向列表维护多个供应商，随时切换「当前」。输入框下方实时预览将要请求的完整地址。API Key 在配置文件中以本机密钥混淆存储。
+- **模型供应商**：填写 Base URL 与 API Key，选择接口格式（OpenAI Chat Completions / OpenAI Responses / Anthropic Messages）。点「获取模型」后从右侧打开模型目录：每个模型用 +/− 加入或移除，关闭面板自动保存；若接口返回了上下文窗口 / 输出上限，会一并显示并随模型保存。供应商级「默认输出上限」仅在模型未单独设置时生效（默认 8192）。API Key 在配置文件中以本机密钥混淆存储。
 - **模型选择**：输入框上方有模型选择器（左对齐浮层），支持搜索过滤；当前会话的模型单独记忆。
 - **会话管理**：左侧竖向会话列表，新建 / 切换 / 删除，标题自动取自第一条消息。
 - **流式对话**：SSE 逐字输出，Markdown 渲染（含代码块高亮）；支持 DeepSeek/GLM `reasoning_content` 与 Anthropic `thinking`，思考过程可折叠查看。消息下方的方形图标按钮提供「复制 / 分支 / 重试」，用户消息另外可以「编辑」并重发。回复失败时重试按钮会展开成红色的「重试」，失败原因直接显示在气泡里。

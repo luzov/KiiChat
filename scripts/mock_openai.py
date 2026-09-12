@@ -47,7 +47,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.rstrip("/").endswith("/models"):
-            self._json({"object": "list", "data": [{"id": m} for m in MODELS]})
+            self._json({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "mock-mini",
+                        "context_length": 32768,
+                        "max_completion_tokens": 4096,
+                    },
+                    {
+                        "id": "mock-large",
+                        "context_length": 128000,
+                        "max_tokens": 8192,
+                    },
+                    {"id": "mock-anthropic", "max_output_tokens": 8192},
+                ],
+            })
         else:
             self.send_error(404)
 
@@ -69,6 +84,8 @@ class Handler(BaseHTTPRequestHandler):
                     {"error": {"message": "chat/completions 需要 Bearer 与 messages"}}, 400
                 )
             self._sse_headers()
+            # reasoning first, then the answer, so the thinking strip is exercised.
+            sse(self, [{"choices": [{"delta": {"reasoning_content": "先拆题…"}}]}])
             for piece in ["来自 ", "**chat** ", "completions。"]:
                 sse(self, [{"choices": [{"delta": {"content": piece}}]}])
             self.wfile.write(b"data: [DONE]\n\n")
