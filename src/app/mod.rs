@@ -1052,6 +1052,7 @@ fn control_button(
     hover: Hsla,
     active: Hsla,
     ink: Hsla,
+    hover_ink: Hsla,
     action: fn(&mut Window, &mut App),
 ) -> impl IntoElement {
     div()
@@ -1074,8 +1075,8 @@ fn control_button(
                 action(window, cx);
             })
         })
-        .hover(move |style| style.bg(hover))
-        .active(move |style| style.bg(active).text_color(ink))
+        .hover(move |style| style.bg(hover).text_color(hover_ink))
+        .active(move |style| style.bg(active).text_color(hover_ink))
         .child(Icon::new(icon).small())
 }
 

@@ -438,6 +438,7 @@ impl KiiChat {
                         theme.secondary_hover,
                         theme.secondary_active,
                         theme.foreground,
+                        theme.foreground,
                         |window, _| window.minimize_window(),
                     ))
                 })
@@ -454,6 +455,7 @@ impl KiiChat {
                         theme.secondary_hover,
                         theme.secondary_active,
                         theme.foreground,
+                        theme.foreground,
                         |window, _| window.zoom_window(),
                     ))
                 })
@@ -462,9 +464,12 @@ impl KiiChat {
                     "关闭",
                     IconName::WindowClose,
                     WindowControlArea::Close,
+                    // Idle ink matches min/max so the X is never invisible;
+                    // only hover turns the control red with a light glyph.
                     theme.danger,
                     theme.danger_active,
-                    theme.danger_foreground,
+                    theme.foreground,
+                    gpui::rgb(0xffffff).into(),
                     |window, _| window.remove_window(),
                 ));
         }
